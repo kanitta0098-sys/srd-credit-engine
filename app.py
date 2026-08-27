@@ -1,9 +1,12 @@
 import streamlit as st
-import google.generativeai as genai
 from PIL import Image
 import pandas as pd
 import math
 import os
+import io
+import base64
+import requests
+import json
 from datetime import datetime
 
 # ==========================================
@@ -60,6 +63,42 @@ st.markdown("""
 st.title("🏍️ SRD Credit Investigation Engine")
 st.caption("ระบบคำนวณค่างวด Flat Rate + ตรวจเอกสารยืนยันตัวตน/พิกัดงาน/PDPA + AI 13 โมดูล — บจก. สิระเดชมอเตอร์เซลล์")
 
+# ฟังก์ชันเชื่อมต่อ Gemini API ผ่าน REST ตรง (รองรับ Key ทุกรูปแบบรวมถึง AQ.)
+def call_gemini_rest_api(api_key, model_name, prompt_text, pil_images):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key.strip()}"
+    
+    parts = [{"text": prompt_text}]
+    
+    for img in pil_images:
+        buffered = io.BytesIO()
+        img_converted = img.convert('RGB')
+        img_converted.save(buffered, format="JPEG", quality=85)
+        img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": img_b64
+            }
+        })
+        
+    payload = {
+        "contents": [
+            {
+                "parts": parts
+            }
+        ]
+    }
+    
+    headers = {"Content-Type": "application/json"}
+    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=90)
+    
+    if response.status_code != 200:
+        err_msg = response.json().get('error', {}).get('message', response.text)
+        raise Exception(f"HTTP {response.status_code}: {err_msg}")
+        
+    res_data = response.json()
+    return res_data["candidates"][0]["content"]["parts"][0]["text"]
+
 # ฟังก์ชันบันทึกประวัติลงไฟล์ CSV แบบ Auto-Recover
 HISTORY_FILE = "srd_credit_assessment_history.csv"
 
@@ -87,11 +126,10 @@ with st.sidebar:
         "Gemini API Key", 
         value=default_api_key,
         type="password", 
-        placeholder="วางรหัส API Key ที่นี่",
-        help="ระบบรองรับทั้ง API Key จาก Google AI Studio และ Google Cloud Console"
+        placeholder="วางรหัส API Key ที่ขึ้นต้นด้วย AQ หรือ AIzaSy",
+        help="รองรับทั้งรหัสรูปแบบ AQ.Ab8... และ AIzaSy..."
     )
 
-    # กำหนดโมเดลมาตรฐานโดยตรง ป้องกัน Error 401 จากการเรียก list_models
     model_options = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
     selected_model = st.selectbox("🤖 โมเดล AI ที่ใช้งาน", model_options, index=0)
 
@@ -395,7 +433,6 @@ with col_ai:
             st.error("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนกดวิเคราะห์")
         else:
             try:
-                genai.configure(api_key=api_key_input.strip())
                 images_to_send = [Image.open(f) for f in uploaded_files]
 
                 full_srd_prompt = f"""
@@ -472,8 +509,8 @@ with col_ai:
 """
 
                 with st.spinner(f"AI ({selected_model}) กำลังประมวลผล 13 โมดูล และบันทึกข้อมูล..."):
-                    model = genai.GenerativeModel(selected_model)
-                    response = model.generate_content([full_srd_prompt] + images_to_send)
+                    # รันผ่านระบบ REST API โดยตรง
+                    ai_response_text = call_gemini_rest_api(api_key_input, selected_model, full_srd_prompt, images_to_send)
                     
                     record = {
                         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -499,7 +536,7 @@ with col_ai:
                         "Rule_Engine_Verdict": r_verdict
                     }
                     save_assessment_record(record)
-                    st.session_state["last_ai_report"] = response.text
+                    st.session_state["last_ai_report"] = ai_response_text
 
             except Exception as e:
                 st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
