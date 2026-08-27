@@ -93,11 +93,11 @@ default_api_key = st.secrets.get("GEMINI_API_KEY", DEFAULT_API_KEY_PRESET) if ha
 with st.sidebar:
     st.header("⚙️ การตั้งค่าระบบ")
     api_key_input = st.text_input(
-        "AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q", 
+        "AQ.Ab8RN6Le6UZJ39fiGNG8DDfiqvosVt8kc0KY0j-kUfeMBykCHg", 
         value=default_api_key,
         type="password", 
-        placeholder="AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q",
-        help="AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q"
+        placeholder="AQ.Ab8RN6Le6UZJ39fiGNG8DDfiqvosVt8kc0KY0j-kUfeMBykCHg",
+        help="AQ.Ab8RN6Le6UZJ39fiGNG8DDfiqvosVt8kc0KY0j-kUfeMBykCHg"
     )
     
     fallback_models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
