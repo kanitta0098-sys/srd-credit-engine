@@ -54,15 +54,20 @@ st.markdown("""
 st.title("🏍️ SRD Credit Investigation Engine")
 st.caption("ระบบคำนวณค่างวด Flat Rate + ตรวจเอกสารยืนยันตัวตน/พิกัดงาน/PDPA + บันทึก Data + AI 13 โมดูล — บจก. สิระเดชมอเตอร์เซลล์")
 
-# ฟังก์ชันบันทึกประวัติลงไฟล์ CSV
+# ฟังก์ชันบันทึกประวัติลงไฟล์ CSV แบบ Auto-Recover
 HISTORY_FILE = "srd_credit_assessment_history.csv"
 
 def save_assessment_record(record_dict):
     df_new = pd.DataFrame([record_dict])
-    if not os.path.exists(HISTORY_FILE):
+    if not os.path.exists(HISTORY_FILE) or os.path.getsize(HISTORY_FILE) == 0:
         df_new.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
     else:
-        df_new.to_csv(HISTORY_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
+        try:
+            df_old = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig', on_bad_lines='skip')
+            df_combined = pd.concat([df_old, df_new], ignore_index=True)
+            df_combined.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
+        except Exception:
+            df_new.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
 
 # ดึง Key จาก Streamlit Secrets (ถ้ามี)
 default_api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
@@ -106,22 +111,28 @@ with st.sidebar:
     else:
         st.warning("⚠️ กรุณากรอก API Key ในแถบด้านซ้าย")
 
-    # ดาวน์โหลดประวัติการประเมิน
+    # ดาวน์โหลดประวัติการประเมิน (Data Log)
     st.write("---")
     st.subheader("💾 ฐานข้อมูลการประเมิน (Data Log)")
-    if os.path.exists(HISTORY_FILE):
-        df_hist = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig')
-        st.caption(f"บันทึกแล้วทั้งหมด: {len(df_hist)} รายการ")
-        csv_data = df_hist.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-        st.download_button(
-            label="📥 ดาวน์โหลดประวัติ (CSV)",
-            data=csv_data,
-            file_name=f"SRD_Credit_Data_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
+    if os.path.exists(HISTORY_FILE) and os.path.getsize(HISTORY_FILE) > 0:
+        try:
+            df_hist = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig', on_bad_lines='skip')
+            st.caption(f"บันทึกแล้วทั้งหมด: {len(df_hist)} รายการ")
+            csv_data = df_hist.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+            st.download_button(
+                label="📥 ดาวน์โหลดประวัติ (CSV)",
+                data=csv_data,
+                file_name=f"SRD_Credit_Data_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        except Exception:
+            st.warning("⚠️ ไฟล์บันทึกเดิมโครงสร้างไม่ตรงกัน")
+            if st.button("🗑️ รีเซ็ตไฟล์ประวัติ"):
+                if os.path.exists(HISTORY_FILE):
+                    os.remove(HISTORY_FILE)
+                st.rerun()
     else:
         st.caption("ยังไม่มีข้อมูลบันทึกในระบบ")
-
 # ==========================================
 # 2. Rule Engine: ตรวจจับทุจริตจัดตั้ง
 # ==========================================
