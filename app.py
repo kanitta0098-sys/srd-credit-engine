@@ -11,30 +11,82 @@ from datetime import datetime
 # ==========================================
 st.set_page_config(page_title="SRD Credit Investigation Engine", layout="wide", page_icon="🏍️")
 
-# บังคับพื้นหลังสีขาวสะอาดตา (Light Theme)
+# บังคับการแสดงผล Light Mode และสีตัวอักษรให้อ่านง่าย คมชัด 100%
 st.markdown("""
     <style>
-        .stApp {
+        /* 1. บังคับพื้นหลังหน้าจอหลักและแถบด้านข้าง */
+        .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
             background-color: #FFFFFF !important;
-            color: #1E1E1E !important;
         }
         [data-testid="stSidebar"] {
             background-color: #F8F9FA !important;
+            border-right: 1px solid #E9ECEF !important;
+        }
+
+        /* 2. สีตัวอักษรทุกส่วนในระบบ */
+        h1, h2, h3, h4, h5, h6, p, span, label, li, .stMarkdown {
+            color: #1A1A1A !important;
+        }
+        .stCaption, [data-testid="stCaptionContainer"] p {
+            color: #495057 !important;
+            font-size: 0.88rem !important;
+        }
+
+        /* 3. จัดสไตล์ตาราง Flat Rate ให้คมชัด */
+        table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            margin: 12px 0 !important;
+            background-color: #FFFFFF !important;
+        }
+        th {
+            background-color: #F1F3F5 !important;
+            color: #212529 !important;
+            font-weight: 700 !important;
+            border: 1px solid #DEE2E6 !important;
+            padding: 10px 14px !important;
+            text-align: left !important;
+        }
+        td {
+            color: #212529 !important;
+            border: 1px solid #DEE2E6 !important;
+            padding: 9px 14px !important;
+        }
+
+        /* 4. ช่องกรอกข้อมูล (Input Fields / Selectbox / Textarea) */
+        input, textarea, [data-baseweb="select"] {
+            color: #111827 !important;
+            background-color: #FFFFFF !important;
+            border-color: #CED4DA !important;
+        }
+        
+        /* 5. กล่องแจ้งเตือน PDPA และการ์ดข้อมูล */
+        .alert-pdpa {
+            background-color: #FFF3CD !important;
+            color: #664D03 !important;
+            padding: 14px !important;
+            border-radius: 8px !important;
+            border-left: 5px solid #FFC107 !important;
+            margin: 12px 0 !important;
+            font-size: 0.95rem !important;
+            line-height: 1.5 !important;
         }
         .metric-card {
-            background-color: #F8F9FA;
-            padding: 12px;
-            border-radius: 8px;
-            border: 1px solid #E9ECEF;
-            margin-bottom: 8px;
+            background-color: #F8F9FA !important;
+            padding: 14px !important;
+            border-radius: 8px !important;
+            border: 1px solid #E9ECEF !important;
+            margin-bottom: 10px !important;
         }
-        .alert-pdpa {
-            background-color: #FFF3CD;
-            color: #856404;
-            padding: 10px;
-            border-radius: 6px;
-            border-left: 4px solid #FFEEBA;
-            margin-bottom: 10px;
+
+        /* 6. ปุ่มกดหลักให้เด่นชัด */
+        div.stButton > button[kind="primary"] {
+            background-color: #E63946 !important;
+            color: #FFFFFF !important;
+            font-weight: bold !important;
+            border: none !important;
+            border-radius: 8px !important;
+            padding: 10px 20px !important;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -58,11 +110,11 @@ default_api_key = st.secrets.get("GEMINI_API_KEY", "")
 with st.sidebar:
     st.header("⚙️ การตั้งค่าระบบ")
     api_key_input = st.text_input(
-        "Gemini API Key", 
+        "AQ.Ab8RN6LlskBivIktEyXkIZTplOe3FlyAO4ECgJUvE6Wn7gimHQ", 
         value=default_api_key,
         type="password", 
-        placeholder="วางรหัส API Key ที่นี่",
-        help="ขอรับ Key ฟรีได้ที่ https://aistudio.google.com"
+        placeholder="AQ.Ab8RN6LlskBivIktEyXkIZTplOe3FlyAO4ECgJUvE6Wn7gimHQ",
+        help="AQ.Ab8RN6LlskBivIktEyXkIZTplOe3FlyAO4ECgJUvE6Wn7gimHQ"
     )
     
     usable_models = []
