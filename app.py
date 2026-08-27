@@ -1,26 +1,77 @@
-# เมนูด้านข้าง (Sidebar) - ฉบับรองรับ Gemini API Key จาก Google Cloud
+import streamlit as st
+import google.generativeai as genai
+from PIL import Image
+import pandas as pd
+import math
+import os
+from datetime import datetime
+
+# ==========================================
+# 1. ตั้งค่าหน้าตาเว็บแอป และ Sidebar
+# ==========================================
+st.set_page_configst.markdown("""
+    <style>
+        /* บังคับพื้นหลังหน้าจอหลักและแถบด้านข้างให้เป็นสีขาวสะอาด */
+        .stApp {
+            background-color: #FFFFFF !important;
+            color: #1E1E1E !important;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #F8F9FA !important;
+        }
+    </style>
+""", unsafe_allow_html=True)(page_title="SRD Credit Investigation Engine", layout="wide", page_icon="🏍️")
+st.title("🏍️ SRD Credit Investigation Engine")
+st.caption("ระบบคำนวณค่างวด + บันทึก Data ใบสมัคร + ตรวจจับความเสี่ยง 13 โมดูล — บจก. สิระเดชมอเตอร์เซลล์")
+
+# ฟังก์ชันบันทึกประวัติลงไฟล์ CSV
+HISTORY_FILE = "srd_credit_assessment_history.csv"
+def save_assessment_record(record_dict):
+    df_new = pd.DataFrame([record_dict])
+    if not os.path.exists(HISTORY_FILE):
+        df_new.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
+    else:
+        df_new.to_csv(HISTORY_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
+
+# เมนูด้านข้าง (Sidebar)
 with st.sidebar:
     st.header("⚙️ การตั้งค่าระบบ")
     api_key_input = st.text_input(
-    "Gemini API Key", 
-    type="password", 
-    placeholder="วางรหัส API Key ที่นี่",
-    help="รหัส API Key จาก Google Cloud"
-)
+        "AQ.Ab8RN6IumO5RHi00Afsb-crTaHY_bNhGl0EIGJ3EJSMh56Fp6w", 
+        type="password", 
+        placeholder="AQ.Ab8RN6IumO5RHi00Afsb-crTaHY_bNhGl0EIGJ3EJSMh56Fp6w",
+        help="AQ.Ab8RN6IumO5RHi00Afsb-crTaHY_bNhGl0EIGJ3EJSMh56Fp6w"
+    )
+    
+    usable_models = []
+    selected_model = None
 
     if api_key_input:
         try:
             genai.configure(api_key=api_key_input.strip())
-            # กำหนดโมเดลมาตรฐานที่พร้อมใช้งานโดยตรง ไม่ต้องดึง list_models
-            model_options = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
-            selected_model = st.selectbox("🤖 เลือกโมเดล AI", model_options, index=0)
-            st.success(f"✅ เชื่อมต่อสำเร็จ: `{selected_model}`")
+            all_models = genai.list_models()
+            for m in all_models:
+                if 'generateContent' in m.supported_generation_methods:
+                    usable_models.append(m.name.replace("models/", ""))
+            
+            if usable_models:
+                preferred_order = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash']
+                default_idx = 0
+                for pref in preferred_order:
+                    if pref in usable_models:
+                        default_idx = usable_models.index(pref)
+                        break
+                        
+                selected_model = st.selectbox("🤖 โมเดล AI พร้อมใช้งาน", usable_models, index=default_idx)
+                st.success(f"✅ พร้อมใช้งาน: `{selected_model}`")
+            else:
+                st.error("❌ ไม่พบโมเดลที่เปิดใช้งาน")
         except Exception as e:
             st.error(f"⚠️ เชื่อมต่อขัดข้อง: {e}")
     else:
-        st.warning("⚠️ กรุณากรอก Gemini API Key ในช่องด้านบน")
+        st.warning("⚠️ กรุณากรอก API Key ในแถบด้านซ้าย")
 
-    # ดาวน์โหลดประวัติการประเมิน
+    # ดาวน์โหลดประวัติการประเมินทั้งหมด
     st.write("---")
     st.subheader("💾 ฐานข้อมูลการประเมิน (Data Log)")
     if os.path.exists(HISTORY_FILE):
@@ -35,3 +86,293 @@ with st.sidebar:
         )
     else:
         st.caption("ยังไม่มีข้อมูลบันทึกในระบบ")
+
+# ==========================================
+# 2. Rule Engine: ตรวจจับทุจริตจัดตั้ง
+# ==========================================
+def evaluate_fraud_rules(vehicle_type, down_pct, employment_type, shared_contracts_count):
+    rule_score = 0
+    flags = []
+    high_risk_categories = ["Yamaha - Sport", "Honda - รถใหม่", "PICKUP_4X4", "BIGBIKE_PREMIUM"]
+    unstable_jobs = ["ฟรีแลนซ์/รับจ้างทั่วไป", "ว่างงาน/ไม่มีงานประจำ", "FREELANCE", "GENERAL_LABOR", "UNEMPLOYED"]
+    
+    if (vehicle_type in high_risk_categories or "Sport" in vehicle_type) and down_pct <= 5.0 and employment_type in unstable_jobs:
+        rule_score += 40
+        flags.append("⚠️ R_MATCH_RISK_01: เสี่ยงดาวน์แลกเงิน (รถสปอร์ต/ตลาด + ดาวน์ ≤5% + อาชีพไม่นิ่ง)")
+        
+    if shared_contracts_count >= 1:
+        rule_score += 50
+        flags.append("🚨 R_LINKAGE_02: เครือข่ายนายหน้า/จัดซ้อน (พบความเชื่อมโยงกับสัญญาอื่นใน 90 วัน)")
+        
+    if rule_score >= 80:
+        rule_verdict = "⛔ AUTO REJECT (เสี่ยงทุจริตจัดตั้งสูงมาก)"
+    elif rule_score >= 50:
+        rule_verdict = "🟠 MANUAL REVIEW (ต้องส่งฝ่ายสินเชื่อตรวจเชิงลึก)"
+    else:
+        rule_verdict = "🟢 AUTO PASS (ผ่านเกณฑ์ความเสี่ยงจัดตั้งเบื้องต้น)"
+        
+    return rule_score, flags, rule_verdict
+
+# ==========================================
+# 3. โหลดข้อมูลตารางราคารถครบ 5 หมวดหมู่
+# ==========================================
+@st.cache_data
+def load_all_motorcycle_data():
+    file_path = 'Yamaha_+รวมขายทุกตัว 25-8-69 Dynamic_Formulas_Categories.xlsx'
+    motorcycle_dict = {}
+    for sheet in ['Auto', 'Moped', 'Sport']:
+        try:
+            df = pd.read_excel(file_path, sheet_name=sheet, skiprows=1)
+            df = df.rename(columns={'รุ่นรถ': 'รุ่นรถ', 'ราคาจัด': 'ราคาสด', 'ดอกเบี้ย\n(ต่อเดือน)': 'ดอกเบี้ย', 'ดาวน์': 'เงินดาวน์', 'ค่าจด/พรบ.': 'ค่าจด', 'รวมออกรถ': 'รวมออกรถ'})
+            df[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']] = df[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']].ffill()
+            df = df.dropna(subset=['รุ่นรถ'])
+            motorcycle_dict[f"Yamaha - {sheet}"] = df
+        except Exception:
+            pass
+
+    for sheet, name in [('รถใหม่_Honda', 'Honda - รถใหม่'), ('รถมือสอง_Honda', 'Honda - รถมือสอง')]:
+        try:
+            df_h = pd.read_excel(file_path, sheet_name=sheet, skiprows=1)
+            first_col = 'เลขเครื่อง' if 'เลขเครื่อง' in df_h.columns else 'รุ่นรถ'
+            df_h = df_h.rename(columns={first_col: 'รุ่นรถ', 'ราคาจัด': 'ราคาสด', 'ดอกเบี้ย\n(ต่อเดือน)': 'ดอกเบี้ย', 'เงินดาวน์': 'เงินดาวน์', 'ค่าจด/พรบ.': 'ค่าจด', 'รวมออกรถ': 'รวมออกรถ'})
+            df_h[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']] = df_h[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']].ffill()
+            df_h = df_h.dropna(subset=['รุ่นรถ'])
+            motorcycle_dict[name] = df_h
+        except Exception:
+            pass
+
+    return motorcycle_dict
+
+motorcycle_data = load_all_motorcycle_data()
+
+# ==========================================
+# 4. หน้าจอหลัก (แบ่ง 2 ฝั่ง)
+# ==========================================
+col_calc, col_ai = st.columns([1.1, 1.2])
+
+with col_calc:
+    st.subheader("🛵 1. ข้อมูลรถและค่างวด Flat Rate")
+    
+    category = "Yamaha - Auto"
+    if motorcycle_data:
+        category = st.selectbox("เลือกหมวดหมู่รถ", list(motorcycle_data.keys()))
+        df_cat = motorcycle_data[category]
+        selected_model_name = st.selectbox("เลือกรุ่นรถ", df_cat['รุ่นรถ'].unique().tolist())
+        row_preset = df_cat[df_cat['รุ่นรถ'] == selected_model_name].iloc[0]
+        
+        default_model_name = str(selected_model_name)
+        default_cash_price = int(row_preset['ราคาสด']) if pd.notna(row_preset['ราคาสด']) else 60000
+        rate_val = row_preset.get('ดอกเบี้ย', 0.015)
+        default_interest = float(rate_val * 100) if rate_val < 0.1 else float(rate_val)
+        default_reg_fee = int(row_preset['ค่าจด']) if 'ค่าจด' in row_preset and pd.notna(row_preset['ค่าจด']) else 1000
+    else:
+        default_model_name = "แกรนด์ฟีลาโน่ Edi+SMK"
+        default_cash_price = 76200
+        default_interest = 1.50
+        default_reg_fee = 1000
+
+    c1, c2 = st.columns(2)
+    with c1:
+        model_name = st.text_input("ชื่อรุ่นรถ", value=default_model_name)
+        cash_price = st.number_input("ราคาสดตัวรถ (บาท)", value=int(default_cash_price), step=1000)
+        down_payment = st.number_input("เงินดาวน์ (บาท)", value=5000, step=500)
+    with c2:
+        interest_rate_pm = st.number_input("ดอกเบี้ย Flat Rate (%/เดือน)", value=float(default_interest), step=0.05, format="%.2f")
+        term_months = st.selectbox("ระยะเวลาผ่อน (งวด)", [12, 18, 24, 30, 36, 42, 48, 60], index=4)
+
+    down_pct = (down_payment / cash_price) * 100 if cash_price > 0 else 0
+    financing_amount = max(0, cash_price - down_payment)
+    total_interest = financing_amount * (interest_rate_pm / 100.0) * term_months
+    total_debt = financing_amount + total_interest
+    monthly_installment = math.ceil(total_debt / term_months) if term_months > 0 else 0
+
+    st.markdown(f"**ยอดจัด:** `{financing_amount:,.0f}` บาท | **ดาวน์:** `{down_pct:.1f}%` | **ค่างวด:** `{monthly_installment:,.0f}` บาท/เดือน ({term_months} งวด)")
+
+    st.write("---")
+    st.subheader("👤 2. ข้อมูลผู้กู้ (Applicant)")
+    u1, u2 = st.columns(2)
+    with u1:
+        applicant_name = st.text_input("ชื่อ-นามสกุล ผู้กู้", value="สมชาย ใจดี")
+        applicant_age = st.number_input("อายุ (ปี)", min_value=18, max_value=80, value=28)
+        emp_type = st.selectbox("ประเภทอาชีพ", ["พนักงานประจำ/มีสลิป", "ข้าราชการ/รัฐวิสาหกิจ", "เจ้าของกิจการ/ค้าขายหน้าร้าน", "ฟรีแลนซ์/รับจ้างทั่วไป", "ว่างงาน/ไม่มีงานประจำ"])
+        salary = st.number_input("ฐานเงินเดือน/รายได้หลัก (บาท)", value=18000, step=500)
+    with u2:
+        applicant_phone = st.text_input("เบอร์โทรศัพท์ผู้กู้", value="081-xxxxxxx")
+        residence_status = st.selectbox("สถานะที่พักอาศัย", ["บ้านตนเอง/ปลอดภาระ", "บ้านตนเอง/ติดผ่อน", "บ้านพักสวัสดิการ", "บ้านญาติ/ครอบครัว", "บ้านเช่า/หอพัก"])
+        extra_income = st.number_input("รายได้เสริมที่พิสูจน์ได้ (บาท)", value=3000, step=500)
+        existing_debt = st.number_input("หนี้เดิม/โอนออกประจำ (บาท)", value=3000, step=500)
+
+    shared_history = st.number_input("ความเชื่อมโยงสัญญาอื่นใน 90 วัน (เบอร์/ที่อยู่ตรงกัน)", min_value=0, value=0, step=1)
+    r_score, r_flags, r_verdict = evaluate_fraud_rules(category, down_pct, emp_type, shared_history)
+
+    # ------------------------------------------
+    # ข้อมูลคู่สมรส (Spouse)
+    # ------------------------------------------
+    st.write("---")
+    has_spouse = st.checkbox("💍 ข้อมูลคู่สมรส (Spouse)", value=False)
+    spouse_summary = "ไม่มีข้อมูลคู่สมรส / โสด"
+    if has_spouse:
+        st.caption("ข้อมูลคู่สมรสช่วยเพิ่มความน่าเชื่อถือและความสามารถในการผ่อนชำระของครัวเรือน")
+        sp1, sp2 = st.columns(2)
+        with sp1:
+            spouse_name = st.text_input("ชื่อ-นามสกุล คู่สมรส", value="")
+            spouse_status = st.selectbox("สถานะสมรส", ["จดทะเบียนสมรส", "อยู่กินกันฉันสามีภริยา (ไม่จดทะเบียน)", "หย่าร้าง / แยกกันอยู่"])
+            spouse_job = st.text_input("อาชีพคู่สมรส", value="พนักงานบริษัท")
+        with sp2:
+            spouse_income = st.number_input("รายได้คู่สมรส (บาท/เดือน)", value=15000, step=1000)
+            spouse_debt = st.number_input("ภาระหนี้คู่สมรส (บาท/เดือน)", value=2000, step=500)
+            spouse_support = st.radio("ร่วมรับผิดชอบค่างวดหรือไม่", ["ร่วมส่งค่างวด", "รับรู้แต่ไม่ร่วมส่ง", "ไม่รับรู้การซื้อรถ"], horizontal=True)
+        spouse_summary = f"คู่สมรส: {spouse_name} ({spouse_status}) | อาชีพ: {spouse_job} | รายได้: {spouse_income:,.0f} บาท | หนี้: {spouse_debt:,.0f} บาท | สถานะการผ่อน: {spouse_support}"
+
+    # ------------------------------------------
+    # ข้อมูลคนค้ำประกัน (Guarantor)
+    # ------------------------------------------
+    st.write("---")
+    has_guarantor = st.checkbox("👥 มีคนค้ำประกัน (Guarantor)", value=True)
+    g_text = "ไม่มีคนค้ำประกัน"
+    if has_guarantor:
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            g_name = st.text_input("ชื่อ-นามสกุล คนค้ำประกัน", value="สมศรี ใจดี")
+            g_rel = st.selectbox("ความสัมพันธ์คนค้ำ", ["บิดา/มารดา (สายเลือดตรง)", "คู่สมรส", "พี่น้องแท้ๆ", "เพื่อนร่วมงาน/นายจ้าง", "คนรู้จักทั่วไป"])
+            g_job = st.text_input("อาชีพคนค้ำ", value="พนักงานประจำ / ข้าราชการ")
+        with gc2:
+            g_phone = st.text_input("เบอร์โทรคนค้ำ", value="089-xxxxxxx")
+            g_inc = st.number_input("รายได้สุทธิคนค้ำ (บาท)", value=22000, step=1000)
+            g_house = st.selectbox("ที่อยู่อาศัยคนค้ำ", ["อยู่บ้านเดียวกับผู้กู้", "มีบ้านของตนเอง", "บ้านเช่า"])
+        g_text = f"คนค้ำ: {g_name} ({g_rel}) | โทร: {g_phone} | อาชีพ: {g_job} | รายได้: {g_inc:,.0f} บาท | ที่อยู่: {g_house}"
+
+    # ------------------------------------------
+    # บุคคลอ้างอิง (Reference Persons)
+    # ------------------------------------------
+    st.write("---")
+    st.subheader("📞 3. บุคคลอ้างอิง (References)")
+    rf1, rf2 = st.columns(2)
+    with rf1:
+        ref1_name = st.text_input("บุคคลอ้างอิงคนที่ 1 (ชื่อ-สกุล)", value="สมศักดิ์ ใจดี")
+        ref1_rel = st.text_input("ความสัมพันธ์ 1", value="พี่ชาย")
+        ref1_tel = st.text_input("เบอร์โทร 1", value="086-xxxxxxx")
+    with rf2:
+        ref2_name = st.text_input("บุคคลอ้างอิงคนที่ 2 (ชื่อ-สกุล)", value="สมใจ มิตรแท้")
+        ref2_rel = st.text_input("ความสัมพันธ์ 2", value="หัวหน้างาน")
+        ref2_tel = st.text_input("เบอร์โทร 2", value="082-xxxxxxx")
+    ref_summary = f"อ้างอิง 1: {ref1_name} ({ref1_rel} - {ref1_tel}) | อ้างอิง 2: {ref2_name} ({ref2_rel} - {ref2_tel})"
+
+with col_ai:
+    st.subheader("🔍 4. SRD Investigation Engine (13 Modules)")
+    
+    uploaded_files = st.file_uploader(
+        "อัปโหลดเอกสารทั้งหมด (Statement, บัตร ปชช. ผู้กู้/คนค้ำ, สลิป)", 
+        type=["png", "jpg", "jpeg"], 
+        accept_multiple_files=True
+    )
+    
+    customer_story = st.text_area(
+        "บันทึกบริบทหน้าร้าน / พฤติกรรมลูกค้า", 
+        placeholder="เช่น ลูกค้ามากับคุณแม่และคู่สมรส แจ้งว่าจะนำรถไปใช้วิ่งไปทำงานโรงงาน...", 
+        height=80
+    )
+
+    if uploaded_files:
+        st.caption(f"📁 แนบเอกสาร {len(uploaded_files)} ไฟล์เรียบร้อย")
+
+    if uploaded_files and st.button("🚀 รันระบบวิเคราะห์ความเสี่ยงและบันทึกข้อมูล", type="primary", use_container_width=True):
+        if not api_key_input or not selected_model:
+            st.error("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนกดวิเคราะห์")
+        else:
+            try:
+                genai.configure(api_key=api_key_input.strip())
+                images_to_send = [Image.open(f) for f in uploaded_files]
+
+                full_srd_prompt = f"""
+# SRD CREDIT INVESTIGATION ENGINE (FULL 13 MODULES)
+## ระบบวิเคราะห์สินเชื่อเชิงพฤติกรรมและตรวจจับการทุจริต — บริษัท สิระเดชมอเตอร์เซลล์ จำกัด
+
+### ROLE & PRINCIPLES
+คุณคือ “Head of Credit Risk & Fraud Intelligence — SRD Motor Finance”
+- เป้าหมาย: อนุมัติลูกค้าที่มีเจตนาและสามารถผ่อนได้จริง พร้อมดักจับขบวนการทุจริตจัดตั้ง
+- หลักการ: ห้ามเชื่อข้อมูลแหล่งเดียว (Cross-Validation ทุกจุด) | ห้ามสรุปว่าทุจริตจากสัญญาณเดียว (ดู Pattern) | วิเคราะห์ Customer Story ความสอดคล้อง
+
+---
+
+[ข้อมูลใบสมัครและโครงสร้างสินเชื่อ]
+- ผู้กู้: {applicant_name} (อายุ {applicant_age} ปี) | โทร: {applicant_phone} | ที่พัก: {residence_status}
+- อาชีพ: {emp_type} | เงินเดือน {salary:,.0f} บาท | เสริม {extra_income:,.0f} บาท | หนี้เดิม {existing_debt:,.0f} บาท
+- รถที่จัด: {model_name} (กลุ่ม {category}) | ราคาสด {cash_price:,.0f} บาท | ดาวน์ {down_payment:,.0f} บาท ({down_pct:.1f}%)
+- ยอดจัด: {financing_amount:,.0f} บาท | ดอกเบี้ย {interest_rate_pm:.2f}% | ค่างวด {monthly_installment:,.0f} บาท x {term_months} งวด
+- ผลประเมิน Rule Engine: Score = {r_score}, Verdict = {r_verdict}, Flags = {r_flags}
+- ข้อมูลคู่สมรส: {spouse_summary}
+- ข้อมูลคนค้ำประกัน: {g_text}
+- บุคคลอ้างอิง: {ref_summary}
+- คำให้การและพฤติกรรมหน้าร้าน: {customer_story}
+
+---
+
+### REQUIRED OUTPUT (สรุปโครงสร้าง 10 ข้อนี้เท่านั้น)
+
+## 1. CUSTOMER & HOUSEHOLD PROFILE
+- สรุปตัวตน อาชีพ รายได้แท้จริงของผู้กู้ คู่สมรส และคนค้ำประกัน
+
+## 2. VERIFIED FACTS vs UNVERIFIED CLAIMS
+- แยกแยะข้อมูลที่มีหลักฐานเอกสารรองรับ ออกจากคำกล่าวอ้างลอยๆ
+
+## 3. MONEY FLOW & CASH FLOW REALITY (MODULE 04 & 05)
+- สรุป Money In -> Money Out -> Money Remain (ประเมินว่าเงินเพียงพอกับค่างวด {monthly_installment:,.0f} บาท หรือไม่)
+
+## 4. FRAUD, GAMBLING & BEHAVIOR CHECK (MODULE 06, 07, 08, 09)
+- **Gambling:** ตรวจสอบความถี่ เวลาโอนดึก และ Money Cycling (ห้ามตัดสินจากเศษสตางค์รายการเดียว)
+- **Nominee / Handover / Down for Cash:** ประเมินความเสี่ยงดาวน์แลกเงิน หรือการใช้ชื่อแทน
+- **Double Financing:** ความผิดปกติของเอกสาร
+
+## 5. GUARANTOR & SPOUSE MITIGATION POWER
+- ประเมินพลังการหักล้างจุดอ่อนของผู้กู้โดยคนค้ำและคู่สมรส (เช่น ผู้กู้งานอิสระแต่คนค้ำมั่นคง/คู่สมรสช่วยส่ง)
+
+## 6. REFERENCE & IDENTITY CROSS-VALIDATION
+- ตรวจสอบความสมเหตุสมผลของเบอร์โทร บุคคลอ้างอิง และที่พักอาศัย
+
+## 7. CONTRADICTION TABLE (MODULE 12)
+| มิติข้อมูล | แหล่งที่ 1 | แหล่งที่ 2 | ผลเปรียบเทียบ | ระดับความขัดแย้ง |
+
+## 8. RISK SCORING & FINAL DECISION (MODULE 13 - 100 คะแนน)
+- Identity (15), Residence (10), Employment (15), Income (15), Cash Flow (15), Credit/NCB (10), Gambling/Distress (10), Nominee (5), Double Financing (5)
+- หักลบความเสี่ยงด้วย Guarantor/Spouse Deduction
+- **ผลการตัดสิน:** 🟢 PASS (0-20) / 🟡 PASS WITH CONTROL (21-40) / 🟠 CONDITIONAL (41-60) / 🔴 HIGH RISK (61-75) / ⛔ REJECT (76-100)
+
+## 9. 30-SECOND SOFT INTERVIEW (คำถามโทนบริการ ไม่สอบสวน)
+- คำถามผู้ซื้อ 2 ข้อ (ถามเส้นทางใช้งานจริง / รอบตัดบิลที่สะดวกชำระ)
+- คำถามคนค้ำประกัน 1 ข้อ (ถามความผูกพันเชิงบวก)
+
+## 10. SUMMARY RECOMMENDATION FOR SALES
+- สรุปแนวทางปิดการขายอย่างปลอดภัยสำหรับเซลส์
+"""
+
+                with st.spinner(f"AI ({selected_model}) กำลังประมวลผล 13 โมดูล และบันทึกข้อมูล..."):
+                    model = genai.GenerativeModel(selected_model)
+                    response = model.generate_content([full_srd_prompt] + images_to_send)
+                    
+                    # บันทึกข้อมูลใบสมัครลงไฟล์ CSV ทันที
+                    record = {
+                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Applicant_Name": applicant_name,
+                        "Applicant_Phone": applicant_phone,
+                        "Model": model_name,
+                        "Cash_Price": cash_price,
+                        "Down_Payment": down_payment,
+                        "Monthly_Installment": monthly_installment,
+                        "Term_Months": term_months,
+                        "Applicant_Salary": salary,
+                        "Applicant_Job": emp_type,
+                        "Spouse_Info": spouse_summary,
+                        "Guarantor_Info": g_text,
+                        "Ref_1": f"{ref1_name} ({ref1_rel} - {ref1_tel})",
+                        "Ref_2": f"{ref2_name} ({ref2_rel} - {ref2_tel})",
+                        "Rule_Engine_Verdict": r_verdict
+                    }
+                    save_assessment_record(record)
+
+                    st.write("---")
+                    st.success("💾 บันทึกข้อมูลลงในฐานข้อมูล Data Log เรียบร้อยแล้ว")
+                    st.markdown("### 📋 รายงานผลการประเมินสินเชื่อเชิงลึก (SRD Engine Report)")
+                    st.markdown(response.text)
+            except Exception as e:
+                st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
