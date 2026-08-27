@@ -61,66 +61,78 @@ st.markdown("""
 st.title("🏍️ SRD Credit Investigation Engine")
 st.caption("ระบบคำนวณค่างวด Flat Rate + ตรวจเอกสารยืนยันตัวตน/พิกัดงาน/PDPA + AI 13 โมดูล — บจก. สิระเดชมอเตอร์เซลล์")
 
-# ฟังก์ชันเชื่อมต่อ Gemini API ผ่าน REST API ตรง (รองรับ Key AQ.Ab8...)
-def call_gemini_rest_api(api_key, model_name, prompt_text, pil_images):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key.strip()}"
+# ฟังก์ชันเชื่อมต่อ OpenRouter API (รองรับการส่งภาพวิเคราะห์เอกสาร)
+def call_openrouter_api(api_key, model_name, prompt_text, pil_images):
+    url = "https://openrouter.ai/api/v1/chat/completions"
     
-    parts = [{"text": prompt_text}]
+    content = [{"type": "text", "text": prompt_text}]
     
     for img in pil_images:
         buffered = io.BytesIO()
         img_converted = img.convert('RGB')
         img_converted.save(buffered, format="JPEG", quality=85)
         img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-        parts.append({
-            "inline_data": {
-                "mime_type": "image/jpeg",
-                "data": img_b64
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/jpeg;base64,{img_b64}"
             }
         })
         
     payload = {
-        "contents": [
+        "model": model_name,
+        "messages": [
             {
-                "parts": parts
+                "role": "user",
+                "content": content
             }
         ]
     }
     
-    headers = {"Content-Type": "application/json"}
-    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=90)
+    headers = {
+        "Authorization": f"Bearer {api_key.strip()}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://srd-credit-engine.streamlit.app",
+        "X-Title": "SRD Credit Investigation Engine"
+    }
+    
+    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=120)
     
     if response.status_code != 200:
         err_msg = response.json().get('error', {}).get('message', response.text)
         raise Exception(f"HTTP {response.status_code}: {err_msg}")
         
     res_data = response.json()
-    return res_data["candidates"][0]["content"]["parts"][0]["text"]
+    return res_data["choices"][0]["message"]["content"]
 
-# ตั้งค่า API Key เริ่มต้นอัตโนมัติ
-HARDCODED_API_KEY = "AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q"
-default_api_key = HARDCODED_API_KEY
-if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-    default_api_key = st.secrets["GEMINI_API_KEY"]
+# ฝังรหัส API Key เริ่มต้นอัตโนมัติ
+HARDCODED_KEY = "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"
+default_api_key = HARDCODED_KEY
+if hasattr(st, "secrets") and "OPENROUTER_API_KEY" in st.secrets:
+    default_api_key = st.secrets["OPENROUTER_API_KEY"]
 
-# เมนูด้านข้าง (Sidebar)
 with st.sidebar:
     st.header("⚙️ การตั้งค่าระบบ")
     api_key_input = st.text_input(
-        "Gemini API Key", 
+        "OpenRouter API Key", 
         value=default_api_key,
         type="password", 
-        placeholder="วางรหัส API Key ที่นี่",
-        help="รหัส API Key พร้อมใช้งาน"
+        placeholder="sk-or-v1-...",
+        help="รหัส API Key จาก openrouter.ai"
     )
 
-    model_options = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
+    model_options = [
+        'google/gemini-2.0-flash-001',
+        'google/gemini-flash-1.5',
+        'openai/gpt-4o-mini',
+        'meta-llama/llama-3.2-11b-vision-instruct:free'
+    ]
     selected_model = st.selectbox("🤖 โมเดล AI ที่ใช้งาน", model_options, index=0)
 
     if api_key_input:
-        st.success("✅ ระบบเชื่อมต่อ API Key เรียบร้อย")
+        st.success("✅ ระบบเชื่อมต่อ AI สำเร็จ")
     else:
-        st.warning("⚠️ กรุณากรอก API Key ในช่องด้านบน")
+        st.warning("⚠️ กรุณากรอก OpenRouter API Key ในช่องด้านบน")
 
 # ==========================================
 # 2. Rule Engine: ตรวจจับทุจริตจัดตั้ง
@@ -388,7 +400,7 @@ with col_ai:
 
     if uploaded_files and st.button("🚀 รันระบบวิเคราะห์ความเสี่ยง (AI Engine)", type="primary", use_container_width=True):
         if not api_key_input:
-            st.error("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนกดวิเคราะห์")
+            st.error("⚠️ กรุณากรอก OpenRouter API Key ในแถบด้านซ้ายก่อนกดวิเคราะห์")
         else:
             try:
                 images_to_send = [Image.open(f) for f in uploaded_files]
@@ -467,7 +479,7 @@ with col_ai:
 """
 
                 with st.spinner(f"AI ({selected_model}) กำลังประมวลผล 13 โมดูล..."):
-                    ai_response_text = call_gemini_rest_api(api_key_input, selected_model, full_srd_prompt, images_to_send)
+                    ai_response_text = call_openrouter_api(api_key_input, selected_model, full_srd_prompt, images_to_send)
                     st.session_state["last_ai_report"] = ai_response_text
 
             except Exception as e:
