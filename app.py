@@ -76,11 +76,11 @@ default_api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets")
 with st.sidebar:
     st.header("⚙️ การตั้งค่าระบบ")
     api_key_input = st.text_input(
-        "Gemini API Key", 
+        "AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q", 
         value=default_api_key,
         type="password", 
-        placeholder="วางรหัส API Key ที่นี่",
-        help="ขอรับ Key ฟรีได้ที่ https://aistudio.google.com"
+        placeholder="AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q",
+        help="AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q"
     )
     
     usable_models = []
