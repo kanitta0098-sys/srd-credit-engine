@@ -9,20 +9,52 @@ from datetime import datetime
 # ==========================================
 # 1. ตั้งค่าหน้าตาเว็บแอป และ Sidebar
 # ==========================================
-st.set_page_configst.markdown("""
+# ==========================================
+# 1. ตั้งค่าหน้าตาเว็บแอป และ Sidebar
+# ==========================================
+st.set_page_config(page_title="SRD Credit Investigation Engine", layout="wide", page_icon="🏍️")
+
+# บังคับพื้นหลังสีขาวสะอาดตา (Light Theme)
+st.markdown("""
     <style>
-        /* บังคับพื้นหลังหน้าจอหลักและแถบด้านข้างให้เป็นสีขาวสะอาด */
-        .stApp {
+        /* 1. บังคับพื้นหลังหน้าจอหลักและแถบด้านข้าง */
+        .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
             background-color: #FFFFFF !important;
-            color: #1E1E1E !important;
         }
         [data-testid="stSidebar"] {
             background-color: #F8F9FA !important;
+            border-right: 1px solid #E9ECEF !important;
+        }
+
+        /* 2. สีตัวอักษรทุกส่วนในระบบ */
+        h1, h2, h3, h4, h5, h6, p, span, label, li, .stMarkdown {
+            color: #1A1A1A !important;
+        }
+        .stCaption, [data-testid="stCaptionContainer"] p {
+            color: #495057 !important;
+            font-size: 0.88rem !important;
+        }
+
+        /* 3. กล่องแจ้งเตือน PDPA และการ์ดข้อมูล */
+        .alert-pdpa {
+            background-color: #FFF3CD !important;
+            color: #664D03 !important;
+            padding: 12px !important;
+            border-radius: 8px !important;
+            border-left: 5px solid #FFC107 !important;
+            margin: 10px 0 !important;
+        }
+        .metric-card {
+            background-color: #F8F9FA !important;
+            padding: 12px !important;
+            border-radius: 8px !important;
+            border: 1px solid #E9ECEF !important;
+            margin-bottom: 8px !important;
         }
     </style>
-""", unsafe_allow_html=True)(page_title="SRD Credit Investigation Engine", layout="wide", page_icon="🏍️")
+""", unsafe_allow_html=True)
 st.title("🏍️ SRD Credit Investigation Engine")
-st.caption("ระบบคำนวณค่างวด + บันทึก Data ใบสมัคร + ตรวจจับความเสี่ยง 13 โมดูล — บจก. สิระเดชมอเตอร์เซลล์")
+st.caption("ระบบคำนวณค่างวด Flat Rate + ตรวจเอกสารยืนยันตัวตน/พิกัดงาน/PDPA + บันทึก Data + AI 13 โมดูล — บจก. สิระเดชมอเตอร์เซลล์")
 
 # ฟังก์ชันบันทึกประวัติลงไฟล์ CSV
 HISTORY_FILE = "srd_credit_assessment_history.csv"
@@ -33,14 +65,18 @@ def save_assessment_record(record_dict):
     else:
         df_new.to_csv(HISTORY_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
+# ดึง Key จาก Streamlit Secrets (ถ้ามี)
+default_api_key = st.secrets.get("GEMINI_API_KEY", "")
+
 # เมนูด้านข้าง (Sidebar)
 with st.sidebar:
     st.header("⚙️ การตั้งค่าระบบ")
     api_key_input = st.text_input(
-        "AQ.Ab8RN6IumO5RHi00Afsb-crTaHY_bNhGl0EIGJ3EJSMh56Fp6w", 
+        "Gemini API Key", 
+        value=default_api_key,
         type="password", 
-        placeholder="AQ.Ab8RN6IumO5RHi00Afsb-crTaHY_bNhGl0EIGJ3EJSMh56Fp6w",
-        help="AQ.Ab8RN6IumO5RHi00Afsb-crTaHY_bNhGl0EIGJ3EJSMh56Fp6w"
+        placeholder="วางรหัส API Key ที่นี่",
+        help="ขอรับ Key ฟรีได้ที่ https://aistudio.google.com"
     )
     
     usable_models = []
@@ -71,7 +107,7 @@ with st.sidebar:
     else:
         st.warning("⚠️ กรุณากรอก API Key ในแถบด้านซ้าย")
 
-    # ดาวน์โหลดประวัติการประเมินทั้งหมด
+    # ดาวน์โหลดประวัติการประเมิน
     st.write("---")
     st.subheader("💾 ฐานข้อมูลการประเมิน (Data Log)")
     if os.path.exists(HISTORY_FILE):
@@ -90,7 +126,7 @@ with st.sidebar:
 # ==========================================
 # 2. Rule Engine: ตรวจจับทุจริตจัดตั้ง
 # ==========================================
-def evaluate_fraud_rules(vehicle_type, down_pct, employment_type, shared_contracts_count):
+def evaluate_fraud_rules(vehicle_type, down_pct, employment_type, shared_contracts_count, dsr_val, gps_consent):
     rule_score = 0
     flags = []
     high_risk_categories = ["Yamaha - Sport", "Honda - รถใหม่", "PICKUP_4X4", "BIGBIKE_PREMIUM"]
@@ -104,6 +140,11 @@ def evaluate_fraud_rules(vehicle_type, down_pct, employment_type, shared_contrac
         rule_score += 50
         flags.append("🚨 R_LINKAGE_02: เครือข่ายนายหน้า/จัดซ้อน (พบความเชื่อมโยงกับสัญญาอื่นใน 90 วัน)")
         
+    # เงื่อนไขตรวจสอบความเสี่ยงส่งข้ามแดน (Export/Sale-off Risk) และมาตรการ PDPA Tracking
+    if (dsr_val > 50.0 or down_pct < 10.0) and not gps_consent:
+        rule_score += 20
+        flags.append("⚠️ R_HIGH_DSR_NO_TRACKING: DSR > 50% หรือดาวน์ < 10% แต่ยังไม่มียินยอมยืนยันสถานที่/GPS ตาม PDPA")
+
     if rule_score >= 80:
         rule_verdict = "⛔ AUTO REJECT (เสี่ยงทุจริตจัดตั้งสูงมาก)"
     elif rule_score >= 50:
@@ -151,7 +192,7 @@ motorcycle_data = load_all_motorcycle_data()
 col_calc, col_ai = st.columns([1.1, 1.2])
 
 with col_calc:
-    st.subheader("🛵 1. ข้อมูลรถและค่างวด Flat Rate")
+    st.subheader("🛵 1. ข้อมูลรถและคำนวณค่างวด Flat Rate")
     
     category = "Yamaha - Auto"
     if motorcycle_data:
@@ -175,18 +216,46 @@ with col_calc:
     with c1:
         model_name = st.text_input("ชื่อรุ่นรถ", value=default_model_name)
         cash_price = st.number_input("ราคาสดตัวรถ (บาท)", value=int(default_cash_price), step=1000)
+        fee_in_loan = st.number_input("ค่า พรบ./ทะเบียน (รวมในยอดจัด)", value=0, step=500)
         down_payment = st.number_input("เงินดาวน์ (บาท)", value=5000, step=500)
     with c2:
         interest_rate_pm = st.number_input("ดอกเบี้ย Flat Rate (%/เดือน)", value=float(default_interest), step=0.05, format="%.2f")
         term_months = st.selectbox("ระยะเวลาผ่อน (งวด)", [12, 18, 24, 30, 36, 42, 48, 60], index=4)
+        fee_separate = st.number_input("ค่า พรบ./ทะเบียน (จ่ายแยกวันออกรถ)", value=int(default_reg_fee), step=500)
 
+    # คำนวณ Flat Rate พื้นฐาน
+    net_price = cash_price + fee_in_loan
     down_pct = (down_payment / cash_price) * 100 if cash_price > 0 else 0
-    financing_amount = max(0, cash_price - down_payment)
+    financing_amount = max(0, net_price - down_payment)
     total_interest = financing_amount * (interest_rate_pm / 100.0) * term_months
     total_debt = financing_amount + total_interest
-    monthly_installment = math.ceil(total_debt / term_months) if term_months > 0 else 0
+    calc_installment = math.ceil(total_debt / term_months) if term_months > 0 else 0
+    
+    # ช่องปรับแต่งค่างวดจริงได้อิสระ
+    st.write("---")
+    col_inst1, col_inst2 = st.columns(2)
+    with col_inst1:
+        st.info(f"💡 **ค่างวดคำนวณตามสูตร:** `{calc_installment:,.0f}` บาท/เดือน")
+    with col_inst2:
+        monthly_installment = st.number_input("✏️ ยอดค่างวดจัดเก็บจริง (แก้ไขได้)", value=int(calc_installment), step=50)
 
-    st.markdown(f"**ยอดจัด:** `{financing_amount:,.0f}` บาท | **ดาวน์:** `{down_pct:.1f}%` | **ค่างวด:** `{monthly_installment:,.0f}` บาท/เดือน ({term_months} งวด)")
+    # ยอดรวมเช่าซื้อทั้งสัญญา
+    actual_total_debt = monthly_installment * term_months
+    total_hire_purchase = down_payment + fee_separate + actual_total_debt
+    total_cash_to_drive = down_payment + fee_separate
+
+    # ตารางสรุปโครงสร้างเช่าซื้อ
+    st.markdown(f"""
+    | โครงสร้างราคาและสินเชื่อเช่าซื้อ | จำนวนเงิน (บาท) |
+    | :--- | :--- |
+    | **1. รวมราคารถสุทธิ (Net Price)** | `{net_price:,.0f}` บาท |
+    | **2. ยอดจัดไฟแนนซ์ (Financing Amount)** | `{financing_amount:,.0f}` บาท *(ดาวน์ {down_pct:.1f}%)* |
+    | **3. ดอกเบี้ยรวม ({interest_rate_pm:.2f}% x {term_months} งวด)** | `{total_interest:,.0f}` บาท |
+    | **4. ยอดหนี้รวมทั้งสิ้น (Total Debt)** | `{actual_total_debt:,.0f}` บาท |
+    | 🏍️ **ค่างวดที่เรียกเก็บต่อเดือน** | **`{monthly_installment:,.0f}` บาท / เดือน** |
+    | 🔑 **รวมจ่ายวันออกรถ (เงินดาวน์ + ทะเบียน)** | **`{total_cash_to_drive:,.0f}` บาท** |
+    | 🏆 **ยอดเช่าซื้อรวมทั้งสัญญา (Total Hire Purchase)** | **`{total_hire_purchase:,.0f}` บาท** |
+    """)
 
     st.write("---")
     st.subheader("👤 2. ข้อมูลผู้กู้ (Applicant)")
@@ -202,11 +271,35 @@ with col_calc:
         extra_income = st.number_input("รายได้เสริมที่พิสูจน์ได้ (บาท)", value=3000, step=500)
         existing_debt = st.number_input("หนี้เดิม/โอนออกประจำ (บาท)", value=3000, step=500)
 
-    shared_history = st.number_input("ความเชื่อมโยงสัญญาอื่นใน 90 วัน (เบอร์/ที่อยู่ตรงกัน)", min_value=0, value=0, step=1)
-    r_score, r_flags, r_verdict = evaluate_fraud_rules(category, down_pct, emp_type, shared_history)
+    # คำนวณ DSR ผู้กู้
+    total_income_applicant = salary + extra_income
+    dsr_calc = ((existing_debt + monthly_installment) / total_income_applicant * 100) if total_income_applicant > 0 else 0
 
     # ------------------------------------------
-    # ข้อมูลคู่สมรส (Spouse)
+    # เงื่อนไขยืนยันสินค้าเช่าซื้อ / GPS ติดตามรถ (ตามกฎหมาย PDPA)
+    # ------------------------------------------
+    st.write("---")
+    st.markdown("🔒 **เงื่อนไขยืนยันสินค้าเช่าซื้อ / ติดตามตำแหน่ง (มาตรฐาน PDPA)**")
+    
+    # แจ้งเตือนเมื่อ DSR > 50% หรือ ดาวน์ < 10%
+    if dsr_calc > 50.0 or down_pct < 10.0:
+        st.markdown(f"""
+        <div class="alert-pdpa">
+            ⚠️ <b>เงื่อนไขพิเศษความเสี่ยง:</b> ลูกค้ามี DSR = {dsr_calc:.1f}% (>50%) หรือ เงินดาวน์ = {down_pct:.1f}% (<10%)<br>
+            <i>แนะนำให้ทำบันทึก "ยินยอมยืนยันสถานที่และติดตั้งอุปกรณ์ติดตามตำแหน่ง (GPS)" เพื่อลดความเสี่ยงการจัดรถส่งต่อ/ข้ามแดน (ลด Risk > 80%)</i>
+        </div>
+        """, unsafe_allow_html=True)
+
+    gps_pdpa_consent = st.checkbox(
+        "✅ ลูกค้ายินยอมให้ยืนยันสินค้าเช่าซื้อตามเงื่อนไขสินเชื่อ / ยืนยันสถานที่และติดตั้งอุปกรณ์ติดตามตำแหน่ง (GPS) ผ่านช่องทางออนไลน์ ตาม พ.ร.บ. คุ้มครองข้อมูลส่วนบุคคล (PDPA)", 
+        value=True if (dsr_calc > 50.0 or down_pct < 10.0) else False
+    )
+
+    shared_history = st.number_input("ความเชื่อมโยงสัญญาอื่นใน 90 วัน (เบอร์/ที่อยู่ตรงกัน)", min_value=0, value=0, step=1)
+    r_score, r_flags, r_verdict = evaluate_fraud_rules(category, down_pct, emp_type, shared_history, dsr_calc, gps_pdpa_consent)
+
+    # ------------------------------------------
+    # ข้อมูลคู่สมรส
     # ------------------------------------------
     st.write("---")
     has_spouse = st.checkbox("💍 ข้อมูลคู่สมรส (Spouse)", value=False)
@@ -225,7 +318,7 @@ with col_calc:
         spouse_summary = f"คู่สมรส: {spouse_name} ({spouse_status}) | อาชีพ: {spouse_job} | รายได้: {spouse_income:,.0f} บาท | หนี้: {spouse_debt:,.0f} บาท | สถานะการผ่อน: {spouse_support}"
 
     # ------------------------------------------
-    # ข้อมูลคนค้ำประกัน (Guarantor)
+    # ข้อมูลคนค้ำประกัน
     # ------------------------------------------
     st.write("---")
     has_guarantor = st.checkbox("👥 มีคนค้ำประกัน (Guarantor)", value=True)
@@ -243,7 +336,7 @@ with col_calc:
         g_text = f"คนค้ำ: {g_name} ({g_rel}) | โทร: {g_phone} | อาชีพ: {g_job} | รายได้: {g_inc:,.0f} บาท | ที่อยู่: {g_house}"
 
     # ------------------------------------------
-    # บุคคลอ้างอิง (Reference Persons)
+    # บุคคลอ้างอิง
     # ------------------------------------------
     st.write("---")
     st.subheader("📞 3. บุคคลอ้างอิง (References)")
@@ -259,22 +352,54 @@ with col_calc:
     ref_summary = f"อ้างอิง 1: {ref1_name} ({ref1_rel} - {ref1_tel}) | อ้างอิง 2: {ref2_name} ({ref2_rel} - {ref2_tel})"
 
 with col_ai:
-    st.subheader("🔍 4. SRD Investigation Engine (13 Modules)")
+    st.subheader("📋 4. เช็คลิสต์เอกสารสำคัญ & ตรวจสอบหน้าร้าน")
+    
+    # เช็คลิสต์เอกสารสำคัญพร้อมจุดยืนยันตัวตนและพิกัดงาน
+    c_doc1 = st.checkbox("1. 📸 ภาพถ่ายยืนยันตัวตนหน้าร้าน (Identity Selfie คู่บัตร ปชช. ตัวจริง)", value=True, help="ป้องกันมิจฉาชีพนำเอกสารบุคคลอื่นมายื่นกู้โดยเจ้าตัวไม่รู้")
+    c_doc2 = st.checkbox("2. 📑 บัตรประชาชน + สำเนาทะเบียนบ้าน", value=True)
+    c_doc3 = st.checkbox("3. 🏦 รายการเดินบัญชีธนาคาร (Statement ย้อนหลัง)", value=True)
+    c_doc4 = st.checkbox("4. 📊 หน้าตรวจสอบประวัติเครดิตบูโร (NCB Report)", value=False)
+    c_doc5 = st.checkbox("5. 💵 สลิปเงินเดือน / หนังสือรับรองรายได้ / ทะเบียนการค้า", value=True)
+    c_doc6 = st.checkbox("6. 📍 รูปถ่ายที่พักอาศัย + หมุด Google Maps / รูปสต็อกสินค้า-แผงค้าจริง", value=True if emp_type in ["ฟรีแลนซ์/รับจ้างทั่วไป", "เจ้าของกิจการ/ค้าขายหน้าร้าน"] else False, help="จำเป็นสำหรับอาชีพอิสระ/ค้าขาย เพื่อยืนยันแหล่งที่มาของรายได้จริง")
+
+    # ช่องกรอกลิงก์หรือพิกัดสถานที่ทำงานจริง
+    workplace_location_note = st.text_input("📌 พิกัด Google Maps หรือสถานที่ทำงาน/ที่พักจริง", placeholder="เช่น https://maps.app.goo.gl/... หรือ หน้าร้านตลาดสดเทศบาล ซอย 3")
+
+    attached_docs = []
+    missing_docs = []
+    for doc_name, is_checked in [
+        ("ภาพเซลฟี่คู่บัตรหน้าร้าน (Identity Verification)", c_doc1),
+        ("บัตรประชาชน+ทะเบียนบ้าน", c_doc2),
+        ("สเตทเม้นธนาคาร", c_doc3),
+        ("หน้าตรวจ NCB", c_doc4),
+        ("สลิปเงินเดือน/หลักฐานรายได้", c_doc5),
+        ("พิกัดที่ทำงาน/รูปสต็อกแผงค้า (Workplace Verification)", c_doc6)
+    ]:
+        if is_checked:
+            attached_docs.append(doc_name)
+        else:
+            missing_docs.append(doc_name)
+
+    doc_status_text = f"เอกสารที่แนบครบ: {', '.join(attached_docs) if attached_docs else 'ไม่มี'} | เอกสารที่ยังขาด: {', '.join(missing_docs) if missing_docs else 'ไม่มี (ครบสมบูรณ์)'}"
+    st.caption(f"📁 **สถานะเอกสาร:** {doc_status_text}")
+
+    st.write("---")
+    st.subheader("🔍 5. อัปโหลดภาพเอกสาร & AI วิเคราะห์ 13 โมดูล")
     
     uploaded_files = st.file_uploader(
-        "อัปโหลดเอกสารทั้งหมด (Statement, บัตร ปชช. ผู้กู้/คนค้ำ, สลิป)", 
+        "อัปโหลดเอกสารทั้งหมด (เซลฟี่หน้าร้าน, Statement, สลิป, บัตร ปชช., รูปสต็อก/แผงค้า)", 
         type=["png", "jpg", "jpeg"], 
         accept_multiple_files=True
     )
     
     customer_story = st.text_area(
         "บันทึกบริบทหน้าร้าน / พฤติกรรมลูกค้า", 
-        placeholder="เช่น ลูกค้ามากับคุณแม่และคู่สมรส แจ้งว่าจะนำรถไปใช้วิ่งไปทำงานโรงงาน...", 
+        placeholder="เช่น ลูกค้ามากับคุณแม่และคู่สมรส เซลฟี่หน้าร้านคู่บัตรเรียบร้อย แจ้งว่าจะนำรถไปใช้วิ่งไปทำงานโรงงาน...", 
         height=80
     )
 
     if uploaded_files:
-        st.caption(f"📁 แนบเอกสาร {len(uploaded_files)} ไฟล์เรียบร้อย")
+        st.caption(f"📁 แนบไฟล์ภาพแล้ว {len(uploaded_files)} ไฟล์")
 
     if uploaded_files and st.button("🚀 รันระบบวิเคราะห์ความเสี่ยงและบันทึกข้อมูล", type="primary", use_container_width=True):
         if not api_key_input or not selected_model:
@@ -295,47 +420,58 @@ with col_ai:
 
 ---
 
-[ข้อมูลใบสมัครและโครงสร้างสินเชื่อ]
+[ข้อมูลโครงสร้างสินเชื่อเช่าซื้อ]
+- รุ่นรถ: {model_name} (กลุ่ม {category})
+- ราคาสด: {cash_price:,.0f} บาท | เงินดาวน์: {down_payment:,.0f} บาท ({down_pct:.1f}%)
+- ยอดจัดไฟแนนซ์: {financing_amount:,.0f} บาท | ดอกเบี้ย: {interest_rate_pm:.2f}% ต่อเดือน
+- ค่างวดที่เรียกเก็บจริง: {monthly_installment:,.0f} บาท x {term_months} งวด
+- ยอดหนี้รวมทั้งสิ้น: {actual_total_debt:,.0f} บาท
+- 🏆 ยอดเช่าซื้อรวมทั้งสัญญา (ดาวน์ + ทะเบียน + ค่างวดทุกงวด): {total_hire_purchase:,.0f} บาท
+- รวมจ่ายวันออกรถ: {total_cash_to_drive:,.0f} บาท
+
+[ข้อมูลผู้กู้และมาตรการควบคุมความเสี่ยง]
 - ผู้กู้: {applicant_name} (อายุ {applicant_age} ปี) | โทร: {applicant_phone} | ที่พัก: {residence_status}
-- อาชีพ: {emp_type} | เงินเดือน {salary:,.0f} บาท | เสริม {extra_income:,.0f} บาท | หนี้เดิม {existing_debt:,.0f} บาท
-- รถที่จัด: {model_name} (กลุ่ม {category}) | ราคาสด {cash_price:,.0f} บาท | ดาวน์ {down_payment:,.0f} บาท ({down_pct:.1f}%)
-- ยอดจัด: {financing_amount:,.0f} บาท | ดอกเบี้ย {interest_rate_pm:.2f}% | ค่างวด {monthly_installment:,.0f} บาท x {term_months} งวด
+- อาชีพ: {emp_type} | เงินเดือน {salary:,.0f} บาท | เสริม {extra_income:,.0f} บาท | หนี้เดิม {existing_debt:,.0f} บาท | DSR: {dsr_calc:.1f}%
+- พิกัด/สถานที่ทำงานจริง: {workplace_location_note if workplace_location_note else 'ไม่ระบุพิกัด'}
+- เงื่อนไขติดตามตำแหน่ง (GPS / PDPA Tracking): {'ยินยอมให้ติดตามตำแหน่งตามเงื่อนไขสินเชื่อ (PDPA Compliant)' if gps_pdpa_consent else 'ไม่มียินยอม GPS'}
 - ผลประเมิน Rule Engine: Score = {r_score}, Verdict = {r_verdict}, Flags = {r_flags}
 - ข้อมูลคู่สมรส: {spouse_summary}
 - ข้อมูลคนค้ำประกัน: {g_text}
 - บุคคลอ้างอิง: {ref_summary}
+- สถานะเช็คลิสต์เอกสาร: {doc_status_text}
 - คำให้การและพฤติกรรมหน้าร้าน: {customer_story}
 
 ---
 
-### REQUIRED OUTPUT (สรุปโครงสร้าง 10 ข้อนี้เท่านั้น)
+### REQUIRED OUTPUT (สรุปรายงานตามโครงสร้าง 10 ข้อนี้)
 
 ## 1. CUSTOMER & HOUSEHOLD PROFILE
 - สรุปตัวตน อาชีพ รายได้แท้จริงของผู้กู้ คู่สมรส และคนค้ำประกัน
 
-## 2. VERIFIED FACTS vs UNVERIFIED CLAIMS
-- แยกแยะข้อมูลที่มีหลักฐานเอกสารรองรับ ออกจากคำกล่าวอ้างลอยๆ
+## 2. IDENTITY & WORKPLACE VERIFICATION (MODULE 01, 02, 03)
+- ตรวจสอบภาพถ่ายเซลฟี่หน้าร้านคู่บัตรประชาชน (ยืนยันว่าผู้สมัคร = คนในบัตร = ผู้ใช้รถจริง)
+- ตรวจสอบความสมเหตุสมผลของพิกัดที่ทำงาน/ภาพสต็อกสินค้า-แผงค้า ({workplace_location_note}) กับอาชีพที่ระบุ
 
-## 3. MONEY FLOW & CASH FLOW REALITY (MODULE 04 & 05)
-- สรุป Money In -> Money Out -> Money Remain (ประเมินว่าเงินเพียงพอกับค่างวด {monthly_installment:,.0f} บาท หรือไม่)
+## 3. VERIFIED FACTS vs UNVERIFIED CLAIMS (ตรวจสอบตามเช็คลิสต์)
+- ระบุข้อเท็จจริงที่มีเอกสารยืนยัน เทียบกับรายการที่ยังขาดเอกสาร ({', '.join(missing_docs) if missing_docs else 'เอกสารครบ'})
 
-## 4. FRAUD, GAMBLING & BEHAVIOR CHECK (MODULE 06, 07, 08, 09)
+## 4. MONEY FLOW & CASH FLOW REALITY (MODULE 04 & 05)
+- สรุป Money In -> Money Out -> Money Remain (ประเมินว่าเงินเพียงพอกับค่างวด {monthly_installment:,.0f} บาท และยอดเช่าซื้อรวม {total_hire_purchase:,.0f} บาท หรือไม่)
+
+## 5. FRAUD, GAMBLING & ASSET RISK CHECK (MODULE 06, 07, 08, 09)
 - **Gambling:** ตรวจสอบความถี่ เวลาโอนดึก และ Money Cycling (ห้ามตัดสินจากเศษสตางค์รายการเดียว)
-- **Nominee / Handover / Down for Cash:** ประเมินความเสี่ยงดาวน์แลกเงิน หรือการใช้ชื่อแทน
+- **Nominee / Handover / Export Risk:** ประเมินความเสี่ยงดาวน์แลกเงิน หรือการส่งรถข้ามแดน และผลกระทบของการมี/ไม่มีความยินยอม GPS ติดตามรถตาม PDPA
 - **Double Financing:** ความผิดปกติของเอกสาร
 
-## 5. GUARANTOR & SPOUSE MITIGATION POWER
+## 6. GUARANTOR & SPOUSE MITIGATION POWER
 - ประเมินพลังการหักล้างจุดอ่อนของผู้กู้โดยคนค้ำและคู่สมรส (เช่น ผู้กู้งานอิสระแต่คนค้ำมั่นคง/คู่สมรสช่วยส่ง)
-
-## 6. REFERENCE & IDENTITY CROSS-VALIDATION
-- ตรวจสอบความสมเหตุสมผลของเบอร์โทร บุคคลอ้างอิง และที่พักอาศัย
 
 ## 7. CONTRADICTION TABLE (MODULE 12)
 | มิติข้อมูล | แหล่งที่ 1 | แหล่งที่ 2 | ผลเปรียบเทียบ | ระดับความขัดแย้ง |
 
 ## 8. RISK SCORING & FINAL DECISION (MODULE 13 - 100 คะแนน)
 - Identity (15), Residence (10), Employment (15), Income (15), Cash Flow (15), Credit/NCB (10), Gambling/Distress (10), Nominee (5), Double Financing (5)
-- หักลบความเสี่ยงด้วย Guarantor/Spouse Deduction
+- หักลบความเสี่ยงด้วย Guarantor/Spouse Deduction และมาตรการ GPS Tracking
 - **ผลการตัดสิน:** 🟢 PASS (0-20) / 🟡 PASS WITH CONTROL (21-40) / 🟠 CONDITIONAL (41-60) / 🔴 HIGH RISK (61-75) / ⛔ REJECT (76-100)
 
 ## 9. 30-SECOND SOFT INTERVIEW (คำถามโทนบริการ ไม่สอบสวน)
@@ -360,18 +496,24 @@ with col_ai:
                         "Down_Payment": down_payment,
                         "Monthly_Installment": monthly_installment,
                         "Term_Months": term_months,
+                        "Total_Debt": actual_total_debt,
+                        "Total_Hire_Purchase": total_hire_purchase,
                         "Applicant_Salary": salary,
                         "Applicant_Job": emp_type,
+                        "DSR_Pct": f"{dsr_calc:.1f}%",
+                        "GPS_PDPA_Consent": "YES" if gps_pdpa_consent else "NO",
+                        "Workplace_Location": workplace_location_note,
                         "Spouse_Info": spouse_summary,
                         "Guarantor_Info": g_text,
                         "Ref_1": f"{ref1_name} ({ref1_rel} - {ref1_tel})",
                         "Ref_2": f"{ref2_name} ({ref2_rel} - {ref2_tel})",
+                        "Attached_Docs": ", ".join(attached_docs),
                         "Rule_Engine_Verdict": r_verdict
                     }
                     save_assessment_record(record)
 
                     st.write("---")
-                    st.success("💾 บันทึกข้อมูลลงในฐานข้อมูล Data Log เรียบร้อยแล้ว")
+                    st.success("💾 บันทึกข้อมูลใบสมัครและยอดเช่าซื้อลงในฐานข้อมูล Data Log เรียบร้อยแล้ว")
                     st.markdown("### 📋 รายงานผลการประเมินสินเชื่อเชิงลึก (SRD Engine Report)")
                     st.markdown(response.text)
             except Exception as e:
