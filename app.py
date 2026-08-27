@@ -123,9 +123,9 @@ with st.sidebar:
 
     model_options = [
         'google/gemini-2.0-flash-001',
-        'google/gemini-flash-1.5',
         'openai/gpt-4o-mini',
-        'meta-llama/llama-3.2-11b-vision-instruct:free'
+        'meta-llama/llama-3.2-11b-vision-instruct:free',
+        'google/gemini-2.0-pro-exp-02-05:free'
     ]
     selected_model = st.selectbox("🤖 โมเดล AI ที่ใช้งาน", model_options, index=0)
 
