@@ -14,7 +14,6 @@ from datetime import datetime
 # ==========================================
 st.set_page_config(page_title="SRD Credit Investigation Engine", layout="wide", page_icon="🏍️")
 
-# กำหนดสไตล์ Light Mode ให้ตัวหนังสือคมชัด ไม่กลืนกับพื้นหลัง
 st.markdown("""
     <style>
         .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
@@ -99,22 +98,7 @@ def call_gemini_rest_api(api_key, model_name, prompt_text, pil_images):
     res_data = response.json()
     return res_data["candidates"][0]["content"]["parts"][0]["text"]
 
-# ฟังก์ชันบันทึกประวัติลงไฟล์ CSV แบบ Auto-Recover
-HISTORY_FILE = "srd_credit_assessment_history.csv"
-
-def save_assessment_record(record_dict):
-    df_new = pd.DataFrame([record_dict])
-    if not os.path.exists(HISTORY_FILE) or os.path.getsize(HISTORY_FILE) == 0:
-        df_new.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
-    else:
-        try:
-            df_old = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig', on_bad_lines='skip')
-            df_combined = pd.concat([df_old, df_new], ignore_index=True)
-            df_combined.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
-        except Exception:
-            df_new.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
-
-# ดึง Key จาก Streamlit Secrets
+# ดึง Key จาก Streamlit Secrets (ถ้ามี)
 default_api_key = ""
 if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
     default_api_key = st.secrets["GEMINI_API_KEY"]
@@ -123,43 +107,20 @@ if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
 with st.sidebar:
     st.header("⚙️ การตั้งค่าระบบ")
     api_key_input = st.text_input(
-        "Gemini API Key", 
+        "AQ.Ab8RN6J002bqfjJqJDFq-S68ViFRJmP0RWwuJgvgKBj58CO9ag", 
         value=default_api_key,
         type="password", 
-        placeholder="วางรหัส API Key ที่ขึ้นต้นด้วย AQ หรือ AIzaSy",
-        help="รองรับทั้งรหัสรูปแบบ AQ.Ab8... และ AIzaSy..."
+        placeholder="AQ.Ab8RN6J002bqfjJqJDFq-S68ViFRJmP0RWwuJgvgKBj58CO9ag",
+        help="AQ.Ab8RN6J002bqfjJqJDFq-S68ViFRJmP0RWwuJgvgKBj58CO9ag"
     )
 
     model_options = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
     selected_model = st.selectbox("🤖 โมเดล AI ที่ใช้งาน", model_options, index=0)
 
     if api_key_input:
-        st.success("✅ ระบบได้รับ API Key เรียบร้อย")
+        st.success("✅ พร้อมใช้งาน")
     else:
         st.warning("⚠️ กรุณากรอก API Key ในช่องด้านบน")
-
-    # ดาวน์โหลดประวัติการประเมิน (Data Log)
-    st.write("---")
-    st.subheader("💾 ฐานข้อมูลการประเมิน (Data Log)")
-    if os.path.exists(HISTORY_FILE) and os.path.getsize(HISTORY_FILE) > 0:
-        try:
-            df_hist = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig', on_bad_lines='skip')
-            st.caption(f"บันทึกแล้วทั้งหมด: {len(df_hist)} รายการ")
-            csv_data = df_hist.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button(
-                label="📥 ดาวน์โหลดประวัติ (CSV)",
-                data=csv_data,
-                file_name=f"SRD_Credit_Data_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-        except Exception:
-            st.warning("⚠️ ไฟล์บันทึกเดิมโครงสร้างไม่ตรงกัน")
-            if st.button("🗑️ รีเซ็ตไฟล์ประวัติ"):
-                if os.path.exists(HISTORY_FILE):
-                    os.remove(HISTORY_FILE)
-                st.rerun()
-    else:
-        st.caption("ยังไม่มีข้อมูลบันทึกในระบบ")
 
 # ==========================================
 # 2. Rule Engine: ตรวจจับทุจริตจัดตั้ง
@@ -428,7 +389,7 @@ with col_ai:
     if uploaded_files:
         st.caption(f"📁 แนบไฟล์ภาพแล้ว {len(uploaded_files)} ไฟล์")
 
-    if uploaded_files and st.button("🚀 รันระบบวิเคราะห์ความเสี่ยงและบันทึกข้อมูล", type="primary", use_container_width=True):
+    if uploaded_files and st.button("🚀 รันระบบวิเคราะห์ความเสี่ยง (AI Engine)", type="primary", use_container_width=True):
         if not api_key_input:
             st.error("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนกดวิเคราะห์")
         else:
@@ -508,34 +469,8 @@ with col_ai:
 - สรุปแนวทางปิดการขายอย่างปลอดภัยสำหรับเซลส์
 """
 
-                with st.spinner(f"AI ({selected_model}) กำลังประมวลผล 13 โมดูล และบันทึกข้อมูล..."):
-                    # รันผ่านระบบ REST API โดยตรง
+                with st.spinner(f"AI ({selected_model}) กำลังประมวลผล 13 โมดูล..."):
                     ai_response_text = call_gemini_rest_api(api_key_input, selected_model, full_srd_prompt, images_to_send)
-                    
-                    record = {
-                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Applicant_Name": applicant_name,
-                        "Applicant_Phone": applicant_phone,
-                        "Model": model_name,
-                        "Cash_Price": cash_price,
-                        "Down_Payment": down_payment,
-                        "Monthly_Installment": monthly_installment,
-                        "Term_Months": term_months,
-                        "Total_Debt": actual_total_debt,
-                        "Total_Hire_Purchase": total_hire_purchase,
-                        "Applicant_Salary": salary,
-                        "Applicant_Job": emp_type,
-                        "DSR_Pct": f"{dsr_calc:.1f}%",
-                        "GPS_PDPA_Consent": "YES" if gps_pdpa_consent else "NO",
-                        "Workplace_Location": workplace_location_note,
-                        "Spouse_Info": spouse_summary,
-                        "Guarantor_Info": g_text,
-                        "Ref_1": f"{ref1_name} ({ref1_rel} - {ref1_tel})",
-                        "Ref_2": f"{ref2_name} ({ref2_rel} - {ref2_tel})",
-                        "Attached_Docs": ", ".join(attached_docs),
-                        "Rule_Engine_Verdict": r_verdict
-                    }
-                    save_assessment_record(record)
                     st.session_state["last_ai_report"] = ai_response_text
 
             except Exception as e:
@@ -543,6 +478,5 @@ with col_ai:
 
     if "last_ai_report" in st.session_state:
         st.write("---")
-        st.success("💾 บันทึกข้อมูลใบสมัครและยอดเช่าซื้อลงในฐานข้อมูล Data Log เรียบร้อยแล้ว")
         st.markdown("### 📋 รายงานผลการประเมินสินเชื่อเชิงลึก (SRD Engine Report)")
         st.markdown(st.session_state["last_ai_report"])
