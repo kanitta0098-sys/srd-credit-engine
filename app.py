@@ -1,6 +1,4 @@
-import difflib
-
-old_code = """import streamlit as st
+import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import pandas as pd
@@ -9,14 +7,13 @@ import os
 from datetime import datetime
 
 # ==========================================
-# 1. ตั้งค่าหน้าตาเว็บแอป และ Sidebar
+# 1. ตั้งค่าหน้าตาเว็บแอป และ Theme สีขาว
 # ==========================================
 st.set_page_config(page_title="SRD Credit Investigation Engine", layout="wide", page_icon="🏍️")
 
-# บังคับพื้นหลังสีขาวสะอาดตา (Light Theme)
-st.markdown(\"""
+# กำหนดสไตล์ Light Mode ให้ตัวหนังสือคมชัด ไม่กลืนกับพื้นหลัง
+st.markdown("""
     <style>
-        /* 1. บังคับพื้นหลังหน้าจอหลักและแถบด้านข้าง */
         .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
             background-color: #FFFFFF !important;
         }
@@ -24,8 +21,6 @@ st.markdown(\"""
             background-color: #F8F9FA !important;
             border-right: 1px solid #E9ECEF !important;
         }
-
-        /* 2. สีตัวอักษรทุกส่วนในระบบ */
         h1, h2, h3, h4, h5, h6, p, span, label, li, .stMarkdown {
             color: #1A1A1A !important;
         }
@@ -33,8 +28,24 @@ st.markdown(\"""
             color: #495057 !important;
             font-size: 0.88rem !important;
         }
-
-        /* 3. กล่องแจ้งเตือน PDPA และการ์ดข้อมูล */
+        table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            margin: 12px 0 !important;
+            background-color: #FFFFFF !important;
+        }
+        th {
+            background-color: #F1F3F5 !important;
+            color: #212529 !important;
+            font-weight: 700 !important;
+            border: 1px solid #DEE2E6 !important;
+            padding: 10px 14px !important;
+        }
+        td {
+            color: #212529 !important;
+            border: 1px solid #DEE2E6 !important;
+            padding: 9px 14px !important;
+        }
         .alert-pdpa {
             background-color: #FFF3CD !important;
             color: #664D03 !important;
@@ -43,84 +54,72 @@ st.markdown(\"""
             border-left: 5px solid #FFC107 !important;
             margin: 10px 0 !important;
         }
-        .metric-card {
-            background-color: #F8F9FA !important;
-            padding: 12px !important;
-            border-radius: 8px !important;
-            border: 1px solid #E9ECEF !important;
-            margin-bottom: 8px !important;
-        }
     </style>
-\""", unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 st.title("🏍️ SRD Credit Investigation Engine")
-st.caption("ระบบคำนวณค่างวด Flat Rate + ตรวจเอกสารยืนยันตัวตน/พิกัดงาน/PDPA + บันทึก Data + AI 13 โมดูล — บจก. สิระเดชมอเตอร์เซลล์")
+st.caption("ระบบคำนวณค่างวด Flat Rate + ตรวจเอกสารยืนยันตัวตน/พิกัดงาน/PDPA + AI 13 โมดูล — บจก. สิระเดชมอเตอร์เซลล์")
 
-# ฟังก์ชันบันทึกประวัติลงไฟล์ CSV
+# ฟังก์ชันบันทึกประวัติลงไฟล์ CSV แบบ Auto-Recover
 HISTORY_FILE = "srd_credit_assessment_history.csv"
 
 def save_assessment_record(record_dict):
     df_new = pd.DataFrame([record_dict])
-    if not os.path.exists(HISTORY_FILE):
+    if not os.path.exists(HISTORY_FILE) or os.path.getsize(HISTORY_FILE) == 0:
         df_new.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
     else:
-        df_new.to_csv(HISTORY_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
+        try:
+            df_old = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig', on_bad_lines='skip')
+            df_combined = pd.concat([df_old, df_new], ignore_index=True)
+            df_combined.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
+        except Exception:
+            df_new.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
 
-# ดึง Key จาก Streamlit Secrets (ถ้ามี)
-default_api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
+# ดึง Key จาก Streamlit Secrets
+default_api_key = ""
+if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+    default_api_key = st.secrets["GEMINI_API_KEY"]
 
 # เมนูด้านข้าง (Sidebar)
 with st.sidebar:
     st.header("⚙️ การตั้งค่าระบบ")
     api_key_input = st.text_input(
-        "AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q", 
+        "Gemini API Key", 
         value=default_api_key,
         type="password", 
-        placeholder="AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q",
-        help="AQ.Ab8RN6LW12mxBbQpK3YqvKbx8Kp0V-yDnPtaWplxnO5xAUaM-Q"
+        placeholder="วางรหัส API Key ที่นี่",
+        help="ระบบรองรับทั้ง API Key จาก Google AI Studio และ Google Cloud Console"
     )
-    
-    usable_models = []
-    selected_model = None
+
+    # กำหนดโมเดลมาตรฐานโดยตรง ป้องกัน Error 401 จากการเรียก list_models
+    model_options = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
+    selected_model = st.selectbox("🤖 โมเดล AI ที่ใช้งาน", model_options, index=0)
 
     if api_key_input:
-        try:
-            genai.configure(api_key=api_key_input.strip())
-            all_models = genai.list_models()
-            for m in all_models:
-                if 'generateContent' in m.supported_generation_methods:
-                    usable_models.append(m.name.replace("models/", ""))
-            
-            if usable_models:
-                preferred_order = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash']
-                default_idx = 0
-                for pref in preferred_order:
-                    if pref in usable_models:
-                        default_idx = usable_models.index(pref)
-                        break
-                        
-                selected_model = st.selectbox("🤖 โมเดล AI พร้อมใช้งาน", usable_models, index=default_idx)
-                st.success(f"✅ พร้อมใช้งาน: `{selected_model}`")
-            else:
-                st.error("❌ ไม่พบโมเดลที่เปิดใช้งาน")
-        except Exception as e:
-            st.error(f"⚠️ เชื่อมต่อขัดข้อง: {e}")
+        st.success("✅ ระบบได้รับ API Key เรียบร้อย")
     else:
-        st.warning("⚠️ กรุณากรอก API Key ในแถบด้านซ้าย")
+        st.warning("⚠️ กรุณากรอก API Key ในช่องด้านบน")
 
-    # ดาวน์โหลดประวัติการประเมิน
+    # ดาวน์โหลดประวัติการประเมิน (Data Log)
     st.write("---")
     st.subheader("💾 ฐานข้อมูลการประเมิน (Data Log)")
-    if os.path.exists(HISTORY_FILE):
-        df_hist = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig')
-        st.caption(f"บันทึกแล้วทั้งหมด: {len(df_hist)} รายการ")
-        csv_data = df_hist.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-        st.download_button(
-            label="📥 ดาวน์โหลดประวัติ (CSV)",
-            data=csv_data,
-            file_name=f"SRD_Credit_Data_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
+    if os.path.exists(HISTORY_FILE) and os.path.getsize(HISTORY_FILE) > 0:
+        try:
+            df_hist = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig', on_bad_lines='skip')
+            st.caption(f"บันทึกแล้วทั้งหมด: {len(df_hist)} รายการ")
+            csv_data = df_hist.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+            st.download_button(
+                label="📥 ดาวน์โหลดประวัติ (CSV)",
+                data=csv_data,
+                file_name=f"SRD_Credit_Data_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        except Exception:
+            st.warning("⚠️ ไฟล์บันทึกเดิมโครงสร้างไม่ตรงกัน")
+            if st.button("🗑️ รีเซ็ตไฟล์ประวัติ"):
+                if os.path.exists(HISTORY_FILE):
+                    os.remove(HISTORY_FILE)
+                st.rerun()
     else:
         st.caption("ยังไม่มีข้อมูลบันทึกในระบบ")
 
@@ -155,7 +154,7 @@ def evaluate_fraud_rules(vehicle_type, down_pct, employment_type, shared_contrac
     return rule_score, flags, rule_verdict
 
 # ==========================================
-# 3. โหลดข้อมูลตารางราคารถครบ 5 หมวดหมู่
+# 3. โหลดข้อมูลตารางราคารถ
 # ==========================================
 @st.cache_data
 def load_all_motorcycle_data():
@@ -167,7 +166,7 @@ def load_all_motorcycle_data():
     for sheet in ['Auto', 'Moped', 'Sport']:
         try:
             df = pd.read_excel(file_path, sheet_name=sheet, skiprows=1)
-            df = df.rename(columns={'รุ่นรถ': 'รุ่นรถ', 'ราคาจัด': 'ราคาสด', 'ดอกเบี้ย\\n(ต่อเดือน)': 'ดอกเบี้ย', 'ดาวน์': 'เงินดาวน์', 'ค่าจด/พรบ.': 'ค่าจด', 'รวมออกรถ': 'รวมออกรถ'})
+            df = df.rename(columns={'รุ่นรถ': 'รุ่นรถ', 'ราคาจัด': 'ราคาสด', 'ดอกเบี้ย\n(ต่อเดือน)': 'ดอกเบี้ย', 'ดาวน์': 'เงินดาวน์', 'ค่าจด/พรบ.': 'ค่าจด', 'รวมออกรถ': 'รวมออกรถ'})
             df[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']] = df[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']].ffill()
             df = df.dropna(subset=['รุ่นรถ'])
             motorcycle_dict[f"Yamaha - {sheet}"] = df
@@ -178,7 +177,7 @@ def load_all_motorcycle_data():
         try:
             df_h = pd.read_excel(file_path, sheet_name=sheet, skiprows=1)
             first_col = 'เลขเครื่อง' if 'เลขเครื่อง' in df_h.columns else 'รุ่นรถ'
-            df_h = df_h.rename(columns={first_col: 'รุ่นรถ', 'ราคาจัด': 'ราคาสด', 'ดอกเบี้ย\\n(ต่อเดือน)': 'ดอกเบี้ย', 'เงินดาวน์': 'เงินดาวน์', 'ค่าจด/พรบ.': 'ค่าจด', 'รวมออกรถ': 'รวมออกรถ'})
+            df_h = df_h.rename(columns={first_col: 'รุ่นรถ', 'ราคาจัด': 'ราคาสด', 'ดอกเบี้ย\n(ต่อเดือน)': 'ดอกเบี้ย', 'เงินดาวน์': 'เงินดาวน์', 'ค่าจด/พรบ.': 'ค่าจด', 'รวมออกรถ': 'รวมออกรถ'})
             df_h[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']] = df_h[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']].ffill()
             df_h = df_h.dropna(subset=['รุ่นรถ'])
             motorcycle_dict[name] = df_h
@@ -190,7 +189,7 @@ def load_all_motorcycle_data():
 motorcycle_data = load_all_motorcycle_data()
 
 # ==========================================
-# 4. หน้าจอหลัก (แบ่ง 2 ฝั่ง)
+# 4. หน้าจอหลัก (2 คอลัมน์)
 # ==========================================
 col_calc, col_ai = st.columns([1.1, 1.2])
 
@@ -226,7 +225,7 @@ with col_calc:
         term_months = st.selectbox("ระยะเวลาผ่อน (งวด)", [12, 18, 24, 30, 36, 42, 48, 60], index=4)
         fee_separate = st.number_input("ค่า พรบ./ทะเบียน (จ่ายแยกวันออกรถ)", value=int(default_reg_fee), step=500)
 
-    # คำนวณ Flat Rate พื้นฐาน
+    # คำนวณ Flat Rate
     net_price = cash_price + fee_in_loan
     down_pct = (down_payment / cash_price) * 100 if cash_price > 0 else 0
     financing_amount = max(0, net_price - down_payment)
@@ -241,11 +240,13 @@ with col_calc:
     with col_inst2:
         monthly_installment = st.number_input("✏️ ยอดค่างวดจัดเก็บจริง (แก้ไขได้)", value=int(calc_installment), step=50)
 
+    # ยอดรวมเช่าซื้อทั้งสัญญา
     actual_total_debt = monthly_installment * term_months
     total_hire_purchase = down_payment + fee_separate + actual_total_debt
     total_cash_to_drive = down_payment + fee_separate
 
-    st.markdown(f\"""
+    # ตารางสรุปโครงสร้างเช่าซื้อ
+    st.markdown(f"""
     | โครงสร้างราคาและสินเชื่อเช่าซื้อ | จำนวนเงิน (บาท) |
     | :--- | :--- |
     | **1. รวมราคารถสุทธิ (Net Price)** | `{net_price:,.0f}` บาท |
@@ -255,7 +256,7 @@ with col_calc:
     | 🏍️ **ค่างวดที่เรียกเก็บต่อเดือน** | **`{monthly_installment:,.0f}` บาท / เดือน** |
     | 🔑 **รวมจ่ายวันออกรถ (เงินดาวน์ + ทะเบียน)** | **`{total_cash_to_drive:,.0f}` บาท** |
     | 🏆 **ยอดเช่าซื้อรวมทั้งสัญญา (Total Hire Purchase)** | **`{total_hire_purchase:,.0f}` บาท** |
-    \""")
+    """)
 
     st.write("---")
     st.subheader("👤 2. ข้อมูลผู้กู้ (Applicant)")
@@ -271,6 +272,7 @@ with col_calc:
         extra_income = st.number_input("รายได้เสริมที่พิสูจน์ได้ (บาท)", value=3000, step=500)
         existing_debt = st.number_input("หนี้เดิม/โอนออกประจำ (บาท)", value=3000, step=500)
 
+    # คำนวณ DSR
     total_income_applicant = salary + extra_income
     dsr_calc = ((existing_debt + monthly_installment) / total_income_applicant * 100) if total_income_applicant > 0 else 0
 
@@ -278,12 +280,12 @@ with col_calc:
     st.markdown("🔒 **เงื่อนไขยืนยันสินค้าเช่าซื้อ / ติดตามตำแหน่ง (มาตรฐาน PDPA)**")
     
     if dsr_calc > 50.0 or down_pct < 10.0:
-        st.markdown(f\"""
+        st.markdown(f"""
         <div class="alert-pdpa">
             ⚠️ <b>เงื่อนไขพิเศษความเสี่ยง:</b> ลูกค้ามี DSR = {dsr_calc:.1f}% (>50%) หรือ เงินดาวน์ = {down_pct:.1f}% (<10%)<br>
             <i>แนะนำให้ทำบันทึก "ยินยอมยืนยันสถานที่และติดตั้งอุปกรณ์ติดตามตำแหน่ง (GPS)" เพื่อลดความเสี่ยงการจัดรถส่งต่อ/ข้ามแดน</i>
         </div>
-        \""", unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
     gps_pdpa_consent = st.checkbox(
         "✅ ลูกค้ายินยอมให้ยืนยันสินค้าเช่าซื้อตามเงื่อนไขสินเชื่อ / ยืนยันสถานที่และติดตั้งอุปกรณ์ติดตามตำแหน่ง (GPS) ผ่านช่องทางออนไลน์ ตาม พ.ร.บ. คุ้มครองข้อมูลส่วนบุคคล (PDPA)", 
@@ -293,6 +295,7 @@ with col_calc:
     shared_history = st.number_input("ความเชื่อมโยงสัญญาอื่นใน 90 วัน (เบอร์/ที่อยู่ตรงกัน)", min_value=0, value=0, step=1)
     r_score, r_flags, r_verdict = evaluate_fraud_rules(category, down_pct, emp_type, shared_history, dsr_calc, gps_pdpa_consent)
 
+    # ข้อมูลคู่สมรส
     st.write("---")
     has_spouse = st.checkbox("💍 ข้อมูลคู่สมรส (Spouse)", value=False)
     spouse_summary = "ไม่มีข้อมูลคู่สมรส / โสด"
@@ -309,6 +312,7 @@ with col_calc:
             spouse_support = st.radio("ร่วมรับผิดชอบค่างวดหรือไม่", ["ร่วมส่งค่างวด", "รับรู้แต่ไม่ร่วมส่ง", "ไม่รับรู้การซื้อรถ"], horizontal=True)
         spouse_summary = f"คู่สมรส: {spouse_name} ({spouse_status}) | อาชีพ: {spouse_job} | รายได้: {spouse_income:,.0f} บาท | หนี้: {spouse_debt:,.0f} บาท | สถานะการผ่อน: {spouse_support}"
 
+    # ข้อมูลคนค้ำประกัน
     st.write("---")
     has_guarantor = st.checkbox("👥 มีคนค้ำประกัน (Guarantor)", value=True)
     g_text = "ไม่มีคนค้ำประกัน"
@@ -324,6 +328,7 @@ with col_calc:
             g_house = st.selectbox("ที่อยู่อาศัยคนค้ำ", ["อยู่บ้านเดียวกับผู้กู้", "มีบ้านของตนเอง", "บ้านเช่า"])
         g_text = f"คนค้ำ: {g_name} ({g_rel}) | โทร: {g_phone} | อาชีพ: {g_job} | รายได้: {g_inc:,.0f} บาท | ที่อยู่: {g_house}"
 
+    # บุคคลอ้างอิง
     st.write("---")
     st.subheader("📞 3. บุคคลอ้างอิง (References)")
     rf1, rf2 = st.columns(2)
@@ -386,13 +391,14 @@ with col_ai:
         st.caption(f"📁 แนบไฟล์ภาพแล้ว {len(uploaded_files)} ไฟล์")
 
     if uploaded_files and st.button("🚀 รันระบบวิเคราะห์ความเสี่ยงและบันทึกข้อมูล", type="primary", use_container_width=True):
-        if not api_key_input or not selected_model:
+        if not api_key_input:
             st.error("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนกดวิเคราะห์")
         else:
             try:
+                genai.configure(api_key=api_key_input.strip())
                 images_to_send = [Image.open(f) for f in uploaded_files]
 
-                full_srd_prompt = f\"""
+                full_srd_prompt = f"""
 # SRD CREDIT INVESTIGATION ENGINE (FULL 13 MODULES)
 ## ระบบวิเคราะห์สินเชื่อเชิงพฤติกรรมและตรวจจับการทุจริต — บริษัท สิระเดชมอเตอร์เซลล์ จำกัด
 
@@ -442,7 +448,7 @@ with col_ai:
 - สรุป Money In -> Money Out -> Money Remain (ประเมินว่าเงินเพียงพอกับค่างวด {monthly_installment:,.0f} บาท และยอดเช่าซื้อรวม {total_hire_purchase:,.0f} บาท หรือไม่)
 
 ## 5. FRAUD, GAMBLING & ASSET RISK CHECK (MODULE 06, 07, 08, 09)
-- **Gambling:** ตรวจสอบความถี่ เวลาโอนดึก และ Money Cycling (ห้ามตัดสินจากเศษสตางค์รายการเดียว)
+- **Gambling:** ตรวจสอบความถี่ เวลาโอนดึก และ Money Cycling
 - **Nominee / Handover / Export Risk:** ประเมินความเสี่ยงดาวน์แลกเงิน หรือการส่งรถข้ามแดน และผลกระทบของการมี/ไม่มีความยินยอม GPS ติดตามรถตาม PDPA
 - **Double Financing:** ความผิดปกติของเอกสาร
 
@@ -463,7 +469,7 @@ with col_ai:
 
 ## 10. SUMMARY RECOMMENDATION FOR SALES
 - สรุปแนวทางปิดการขายอย่างปลอดภัยสำหรับเซลส์
-\"""
+"""
 
                 with st.spinner(f"AI ({selected_model}) กำลังประมวลผล 13 โมดูล และบันทึกข้อมูล..."):
                     model = genai.GenerativeModel(selected_model)
@@ -503,15 +509,3 @@ with col_ai:
         st.success("💾 บันทึกข้อมูลใบสมัครและยอดเช่าซื้อลงในฐานข้อมูล Data Log เรียบร้อยแล้ว")
         st.markdown("### 📋 รายงานผลการประเมินสินเชื่อเชิงลึก (SRD Engine Report)")
         st.markdown(st.session_state["last_ai_report"])
-"""
-
-import re
-
-# We will build the new code block by block
-lines = old_code.splitlines()
-
-# Search for the sidebar part to replace the dataframe reading error handling
-for i, line in enumerate(lines):
-    if "df_hist = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig')" in line and "st.caption(f\"บันทึกแล้วทั้งหมด: {len(df_hist)} รายการ\")" in lines[i+1]:
-        # This is where we need to inject the safe read code in the sidebar
-        pass
