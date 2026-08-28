@@ -2,165 +2,505 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import pandas as pd
-import numpy as np
+import math
+import os
+from datetime import datetime
 
 # ==========================================
-# 1. ตั้งค่าหน้าตาเว็บแอป และ API Key
+# 1. ตั้งค่าหน้าตาเว็บแอป และ Sidebar
 # ==========================================
 st.set_page_config(page_title="SRD Credit Investigation Engine", layout="wide", page_icon="🏍️")
-st.title("🏍️ SRD Credit Investigation Engine (V2 - Auto Calc)")
-st.caption("ระบบวิเคราะห์ความสามารถทางการเงินและตรวจจับความเสี่ยงสินเชื่อ (ดึงค่างวดอัตโนมัติ)")
 
-# ใส่ Gemini API Key ของคุณที่นี่
-GEMINI_API_KEY = "ใส่_API_KEY_ของคุณที่นี่"
-genai.configure(api_key=GEMINI_API_KEY)
+# บังคับพื้นหลังสีขาวสะอาดตา (Light Theme)
+st.markdown("""
+    <style>
+        .stApp {
+            background-color: #FFFFFF !important;
+            color: #1E1E1E !important;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #F8F9FA !important;
+        }
+        .metric-card {
+            background-color: #F8F9FA;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #E9ECEF;
+            margin-bottom: 8px;
+        }
+        .alert-pdpa {
+            background-color: #FFF3CD;
+            color: #856404;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 4px solid #FFEEBA;
+            margin-bottom: 10px;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("🏍️ SRD Credit Investigation Engine")
+st.caption("ระบบคำนวณค่างวด Flat Rate + ตรวจเอกสารยืนยันตัวตน/พิกัดงาน/PDPA + บันทึก Data + AI 13 โมดูล — บจก. สิระเดชมอเตอร์เซลล์")
+
+# ฟังก์ชันบันทึกประวัติลงไฟล์ CSV
+HISTORY_FILE = "srd_credit_assessment_history.csv"
+def save_assessment_record(record_dict):
+    df_new = pd.DataFrame([record_dict])
+    if not os.path.exists(HISTORY_FILE):
+        df_new.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
+    else:
+        df_new.to_csv(HISTORY_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
+
+# ดึง Key จาก Streamlit Secrets (ถ้ามี)
+default_api_key = st.secrets.get("GEMINI_API_KEY", "")
+
+# เมนูด้านข้าง (Sidebar)
+with st.sidebar:
+    st.header("⚙️ การตั้งค่าระบบ")
+    api_key_input = st.text_input(
+        "Gemini API Key", 
+        value=default_api_key,
+        type="password", 
+        placeholder="วางรหัส API Key ที่นี่",
+        help="ขอรับ Key ฟรีได้ที่ https://aistudio.google.com"
+    )
+    
+    usable_models = []
+    selected_model = None
+
+    if api_key_input:
+        try:
+            genai.configure(api_key=api_key_input.strip())
+            all_models = genai.list_models()
+            for m in all_models:
+                if 'generateContent' in m.supported_generation_methods:
+                    usable_models.append(m.name.replace("models/", ""))
+            
+            if usable_models:
+                preferred_order = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash']
+                default_idx = 0
+                for pref in preferred_order:
+                    if pref in usable_models:
+                        default_idx = usable_models.index(pref)
+                        break
+                        
+                selected_model = st.selectbox("🤖 โมเดล AI พร้อมใช้งาน", usable_models, index=default_idx)
+                st.success(f"✅ พร้อมใช้งาน: `{selected_model}`")
+            else:
+                st.error("❌ ไม่พบโมเดลที่เปิดใช้งาน")
+        except Exception as e:
+            st.error(f"⚠️ เชื่อมต่อขัดข้อง: {e}")
+    else:
+        st.warning("⚠️ กรุณากรอก API Key ในแถบด้านซ้าย")
+
+    # ดาวน์โหลดประวัติการประเมิน
+    st.write("---")
+    st.subheader("💾 ฐานข้อมูลการประเมิน (Data Log)")
+    if os.path.exists(HISTORY_FILE):
+        df_hist = pd.read_csv(HISTORY_FILE, encoding='utf-8-sig')
+        st.caption(f"บันทึกแล้วทั้งหมด: {len(df_hist)} รายการ")
+        csv_data = df_hist.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+        st.download_button(
+            label="📥 ดาวน์โหลดประวัติ (CSV)",
+            data=csv_data,
+            file_name=f"SRD_Credit_Data_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+    else:
+        st.caption("ยังไม่มีข้อมูลบันทึกในระบบ")
 
 # ==========================================
-# 2. ฟังก์ชันดึงข้อมูลจากไฟล์ Excel ตารางราคารถ
+# 2. Rule Engine: ตรวจจับทุจริตจัดตั้ง
+# ==========================================
+def evaluate_fraud_rules(vehicle_type, down_pct, employment_type, shared_contracts_count, dsr_val, gps_consent):
+    rule_score = 0
+    flags = []
+    high_risk_categories = ["Yamaha - Sport", "Honda - รถใหม่", "PICKUP_4X4", "BIGBIKE_PREMIUM"]
+    unstable_jobs = ["ฟรีแลนซ์/รับจ้างทั่วไป", "ว่างงาน/ไม่มีงานประจำ", "FREELANCE", "GENERAL_LABOR", "UNEMPLOYED"]
+    
+    if (vehicle_type in high_risk_categories or "Sport" in vehicle_type) and down_pct <= 5.0 and employment_type in unstable_jobs:
+        rule_score += 40
+        flags.append("⚠️ R_MATCH_RISK_01: เสี่ยงดาวน์แลกเงิน (รถสปอร์ต/ตลาด + ดาวน์ ≤5% + อาชีพไม่นิ่ง)")
+        
+    if shared_contracts_count >= 1:
+        rule_score += 50
+        flags.append("🚨 R_LINKAGE_02: เครือข่ายนายหน้า/จัดซ้อน (พบความเชื่อมโยงกับสัญญาอื่นใน 90 วัน)")
+        
+    # เงื่อนไขตรวจสอบความเสี่ยงส่งข้ามแดน (Export/Sale-off Risk) และมาตรการ PDPA Tracking
+    if (dsr_val > 50.0 or down_pct < 10.0) and not gps_consent:
+        rule_score += 20
+        flags.append("⚠️ R_HIGH_DSR_NO_TRACKING: DSR > 50% หรือดาวน์ < 10% แต่ยังไม่มียินยอมยืนยันสถานที่/GPS ตาม PDPA")
+
+    if rule_score >= 80:
+        rule_verdict = "⛔ AUTO REJECT (เสี่ยงทุจริตจัดตั้งสูงมาก)"
+    elif rule_score >= 50:
+        rule_verdict = "🟠 MANUAL REVIEW (ต้องส่งฝ่ายสินเชื่อตรวจเชิงลึก)"
+    else:
+        rule_verdict = "🟢 AUTO PASS (ผ่านเกณฑ์ความเสี่ยงจัดตั้งเบื้องต้น)"
+        
+    return rule_score, flags, rule_verdict
+
+# ==========================================
+# 3. โหลดข้อมูลตารางราคารถครบ 5 หมวดหมู่
 # ==========================================
 @st.cache_data
-def load_motorcycle_data():
+def load_all_motorcycle_data():
     file_path = 'Yamaha_+รวมขายทุกตัว 25-8-69 Dynamic_Formulas_Categories.xlsx'
     motorcycle_dict = {}
-    
-    try:
-        # 1. โหลดข้อมูล Yamaha (แผ่น Auto เป็นตัวอย่าง)
-        df_yamaha = pd.read_excel(file_path, sheet_name='Auto', skiprows=1)
-        # เปลี่ยนชื่อคอลัมน์ให้อ่านง่าย
-        df_yamaha = df_yamaha.rename(columns={
-            'ตารางผ่อน': '12', 'Unnamed: 9': '18', 'Unnamed: 10': '24', 
-            'Unnamed: 11': '30', 'Unnamed: 12': '36', 'Unnamed: 13': '48'
-        })
-        df_yamaha = df_yamaha.drop(0) # ทิ้งแถวแรกที่เป็น header ซ้ำ
-        df_yamaha[['รุ่นรถ', 'ราคาจัด', 'ดอกเบี้ย\n(ต่อเดือน)']] = df_yamaha[['รุ่นรถ', 'ราคาจัด', 'ดอกเบี้ย\n(ต่อเดือน)']].ffill()
-        df_yamaha = df_yamaha.dropna(subset=['รุ่นรถ'])
-        motorcycle_dict['Yamaha - Auto'] = df_yamaha
+    for sheet in ['Auto', 'Moped', 'Sport']:
+        try:
+            df = pd.read_excel(file_path, sheet_name=sheet, skiprows=1)
+            df = df.rename(columns={'รุ่นรถ': 'รุ่นรถ', 'ราคาจัด': 'ราคาสด', 'ดอกเบี้ย\n(ต่อเดือน)': 'ดอกเบี้ย', 'ดาวน์': 'เงินดาวน์', 'ค่าจด/พรบ.': 'ค่าจด', 'รวมออกรถ': 'รวมออกรถ'})
+            df[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']] = df[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']].ffill()
+            df = df.dropna(subset=['รุ่นรถ'])
+            motorcycle_dict[f"Yamaha - {sheet}"] = df
+        except Exception:
+            pass
 
-        # 2. โหลดข้อมูล Honda
-        df_honda = pd.read_excel(file_path, sheet_name='รถใหม่_Honda', skiprows=1)
-        df_honda = df_honda.rename(columns={
-            'ตารางผ่อน': '12', 'Unnamed: 8': '24', 'Unnamed: 9': '36', 'Unnamed: 10': '48'
-        })
-        df_honda = df_honda.drop(0)
-        df_honda[['รุ่นรถ', 'ราคาจัด', 'ดอกเบี้ย\n(ต่อเดือน)']] = df_honda[['รุ่นรถ', 'ราคาจัด', 'ดอกเบี้ย\n(ต่อเดือน)']].ffill()
-        df_honda = df_honda.dropna(subset=['รุ่นรถ'])
-        # เปลี่ยนชื่อคอลัมน์เงินดาวน์ให้ตรงกับ Yamaha
-        if 'เงินดาวน์' in df_honda.columns:
-            df_honda = df_honda.rename(columns={'เงินดาวน์': 'ดาวน์'})
-            
-        motorcycle_dict['Honda - ใหม่'] = df_honda
-        
-        return motorcycle_dict
-    except Exception as e:
-        st.error(f"ไม่สามารถโหลดไฟล์ Excel ได้: {e}")
-        return None
+    for sheet, name in [('รถใหม่_Honda', 'Honda - รถใหม่'), ('รถมือสอง_Honda', 'Honda - รถมือสอง')]:
+        try:
+            df_h = pd.read_excel(file_path, sheet_name=sheet, skiprows=1)
+            first_col = 'เลขเครื่อง' if 'เลขเครื่อง' in df_h.columns else 'รุ่นรถ'
+            df_h = df_h.rename(columns={first_col: 'รุ่นรถ', 'ราคาจัด': 'ราคาสด', 'ดอกเบี้ย\n(ต่อเดือน)': 'ดอกเบี้ย', 'เงินดาวน์': 'เงินดาวน์', 'ค่าจด/พรบ.': 'ค่าจด', 'รวมออกรถ': 'รวมออกรถ'})
+            df_h[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']] = df_h[['รุ่นรถ', 'ราคาสด', 'ดอกเบี้ย']].ffill()
+            df_h = df_h.dropna(subset=['รุ่นรถ'])
+            motorcycle_dict[name] = df_h
+        except Exception:
+            pass
 
-# โหลดข้อมูลรถเตรียมไว้
-motorcycle_data = load_motorcycle_data()
+    return motorcycle_dict
+
+motorcycle_data = load_all_motorcycle_data()
 
 # ==========================================
-# 3. จัดแบ่งหน้าจอเป็น 2 ฝั่ง
+# 4. หน้าจอหลัก (แบ่ง 2 ฝั่ง)
 # ==========================================
-col1, col2 = st.columns([1.2, 1])
+col_calc, col_ai = st.columns([1.1, 1.2])
 
-with col1:
-    st.subheader("🛒 1. เลือกรุ่นรถและคำนวณค่างวด")
+with col_calc:
+    st.subheader("🛵 1. ข้อมูลรถและคำนวณค่างวด Flat Rate")
     
-    # --- ส่วนเลือกรถ ---
-    new_installment = 0
+    category = "Yamaha - Auto"
     if motorcycle_data:
-        brand_category = st.selectbox("เลือกหมวดหมู่รถ", list(motorcycle_data.keys()))
-        df_selected = motorcycle_data[brand_category]
+        category = st.selectbox("เลือกหมวดหมู่รถ", list(motorcycle_data.keys()))
+        df_cat = motorcycle_data[category]
+        selected_model_name = st.selectbox("เลือกรุ่นรถ", df_cat['รุ่นรถ'].unique().tolist())
+        row_preset = df_cat[df_cat['รุ่นรถ'] == selected_model_name].iloc[0]
         
-        # ดึงรายชื่อรุ่นรถที่ไม่ซ้ำกัน
-        models = df_selected['รุ่นรถ'].unique().tolist()
-        selected_model = st.selectbox("เลือกรุ่นรถ", models)
-        
-        # กรองข้อมูลเฉพาะรุ่นที่เลือก
-        df_model = df_selected[df_selected['รุ่นรถ'] == selected_model]
-        
-        # เลือกเงินดาวน์ที่มีให้เลือกในรุ่นนั้น
-        down_payments = df_model['ดาวน์'].unique().tolist()
-        selected_down = st.selectbox("เลือกเงินดาวน์ (บาท)", [int(x) for x in down_payments if pd.notna(x)])
-        
-        # กรองให้เหลือแถวเดียวที่ตรงกับรุ่นและดาวน์
-        final_row = df_model[df_model['ดาวน์'] == selected_down].iloc[0]
-        
-        # เลือกระยะเวลาผ่อน (เช็คว่ามีคอลัมน์ไหนบ้าง)
-        term_options = [col for col in ['12', '18', '24', '30', '36', '48'] if col in final_row.index and pd.notna(final_row[col])]
-        selected_term = st.selectbox("ระยะเวลาผ่อน (งวด)", term_options)
-        
-        # ดึงค่างวดออกมา
-        new_installment = final_row[selected_term]
-        
-        st.info(f"🏍️ **รถที่เลือก:** {selected_model} | **ยอดดาวน์:** ฿{selected_down:,} | **ส่งงวดละ:** ฿{new_installment:,.0f} x {selected_term} เดือน")
+        default_model_name = str(selected_model_name)
+        default_cash_price = int(row_preset['ราคาสด']) if pd.notna(row_preset['ราคาสด']) else 60000
+        rate_val = row_preset.get('ดอกเบี้ย', 0.015)
+        default_interest = float(rate_val * 100) if rate_val < 0.1 else float(rate_val)
+        default_reg_fee = int(row_preset['ค่าจด']) if 'ค่าจด' in row_preset and pd.notna(row_preset['ค่าจด']) else 1000
     else:
-        # กรณีไม่มีไฟล์ Excel ให้กรอกมือ
-        new_installment = st.number_input("ค่างวดรถใหม่ที่ขอจัด (บาท)", value=1890, step=100)
+        default_model_name = "แกรนด์ฟีลาโน่ Edi+SMK"
+        default_cash_price = 76200
+        default_interest = 1.50
+        default_reg_fee = 1000
+
+    c1, c2 = st.columns(2)
+    with c1:
+        model_name = st.text_input("ชื่อรุ่นรถ", value=default_model_name)
+        cash_price = st.number_input("ราคาสดตัวรถ (บาท)", value=int(default_cash_price), step=1000)
+        fee_in_loan = st.number_input("ค่า พรบ./ทะเบียน (รวมในยอดจัด)", value=0, step=500)
+        down_payment = st.number_input("เงินดาวน์ (บาท)", value=5000, step=500)
+    with c2:
+        interest_rate_pm = st.number_input("ดอกเบี้ย Flat Rate (%/เดือน)", value=float(default_interest), step=0.05, format="%.2f")
+        term_months = st.selectbox("ระยะเวลาผ่อน (งวด)", [12, 18, 24, 30, 36, 42, 48, 60], index=4)
+        fee_separate = st.number_input("ค่า พรบ./ทะเบียน (จ่ายแยกวันออกรถ)", value=int(default_reg_fee), step=500)
+
+    # คำนวณ Flat Rate พื้นฐาน
+    net_price = cash_price + fee_in_loan
+    down_pct = (down_payment / cash_price) * 100 if cash_price > 0 else 0
+    financing_amount = max(0, net_price - down_payment)
+    total_interest = financing_amount * (interest_rate_pm / 100.0) * term_months
+    total_debt = financing_amount + total_interest
+    calc_installment = math.ceil(total_debt / term_months) if term_months > 0 else 0
+    
+    # ช่องปรับแต่งค่างวดจริงได้อิสระ
+    st.write("---")
+    col_inst1, col_inst2 = st.columns(2)
+    with col_inst1:
+        st.info(f"💡 **ค่างวดคำนวณตามสูตร:** `{calc_installment:,.0f}` บาท/เดือน")
+    with col_inst2:
+        monthly_installment = st.number_input("✏️ ยอดค่างวดจัดเก็บจริง (แก้ไขได้)", value=int(calc_installment), step=50)
+
+    # ยอดรวมเช่าซื้อทั้งสัญญา
+    actual_total_debt = monthly_installment * term_months
+    total_hire_purchase = down_payment + fee_separate + actual_total_debt
+    total_cash_to_drive = down_payment + fee_separate
+
+    # ตารางสรุปโครงสร้างเช่าซื้อ
+    st.markdown(f"""
+    | โครงสร้างราคาและสินเชื่อเช่าซื้อ | จำนวนเงิน (บาท) |
+    | :--- | :--- |
+    | **1. รวมราคารถสุทธิ (Net Price)** | `{net_price:,.0f}` บาท |
+    | **2. ยอดจัดไฟแนนซ์ (Financing Amount)** | `{financing_amount:,.0f}` บาท *(ดาวน์ {down_pct:.1f}%)* |
+    | **3. ดอกเบี้ยรวม ({interest_rate_pm:.2f}% x {term_months} งวด)** | `{total_interest:,.0f}` บาท |
+    | **4. ยอดหนี้รวมทั้งสิ้น (Total Debt)** | `{actual_total_debt:,.0f}` บาท |
+    | 🏍️ **ค่างวดที่เรียกเก็บต่อเดือน** | **`{monthly_installment:,.0f}` บาท / เดือน** |
+    | 🔑 **รวมจ่ายวันออกรถ (เงินดาวน์ + ทะเบียน)** | **`{total_cash_to_drive:,.0f}` บาท** |
+    | 🏆 **ยอดเช่าซื้อรวมทั้งสัญญา (Total Hire Purchase)** | **`{total_hire_purchase:,.0f}` บาท** |
+    """)
 
     st.write("---")
-    st.subheader("📊 2. คำนวณความสามารถทางการเงิน (Math Engine)")
+    st.subheader("👤 2. ข้อมูลผู้กู้ (Applicant)")
+    u1, u2 = st.columns(2)
+    with u1:
+        applicant_name = st.text_input("ชื่อ-นามสกุล ผู้กู้", value="สมชาย ใจดี")
+        applicant_age = st.number_input("อายุ (ปี)", min_value=18, max_value=80, value=28)
+        emp_type = st.selectbox("ประเภทอาชีพ", ["พนักงานประจำ/มีสลิป", "ข้าราชการ/รัฐวิสาหกิจ", "เจ้าของกิจการ/ค้าขายหน้าร้าน", "ฟรีแลนซ์/รับจ้างทั่วไป", "ว่างงาน/ไม่มีงานประจำ"])
+        salary = st.number_input("ฐานเงินเดือน/รายได้หลัก (บาท)", value=18000, step=500)
+    with u2:
+        applicant_phone = st.text_input("เบอร์โทรศัพท์ผู้กู้", value="081-xxxxxxx")
+        residence_status = st.selectbox("สถานะที่พักอาศัย", ["บ้านตนเอง/ปลอดภาระ", "บ้านตนเอง/ติดผ่อน", "บ้านพักสวัสดิการ", "บ้านญาติ/ครอบครัว", "บ้านเช่า/หอพัก"])
+        extra_income = st.number_input("รายได้เสริมที่พิสูจน์ได้ (บาท)", value=3000, step=500)
+        existing_debt = st.number_input("หนี้เดิม/โอนออกประจำ (บาท)", value=3000, step=500)
+
+    # คำนวณ DSR ผู้กู้
+    total_income_applicant = salary + extra_income
+    dsr_calc = ((existing_debt + monthly_installment) / total_income_applicant * 100) if total_income_applicant > 0 else 0
+
+    # ------------------------------------------
+    # เงื่อนไขยืนยันสินค้าเช่าซื้อ / GPS ติดตามรถ (ตามกฎหมาย PDPA)
+    # ------------------------------------------
+    st.write("---")
+    st.markdown("🔒 **เงื่อนไขยืนยันสินค้าเช่าซื้อ / ติดตามตำแหน่ง (มาตรฐาน PDPA)**")
     
-    col_a, col_b = st.columns(2)
-    with col_a:
-        salary = st.number_input("ฐานเงินเดือนประจำสุทธิ (บาท)", value=21000, step=500)
-        extra_income = st.number_input("รายได้เสริมที่พิสูจน์ได้ (บาท)", value=5100, step=500)
-    with col_b:
-        existing_debt = st.number_input("หนี้ในระบบ / โอนออกประจำ (บาท)", value=5000, step=500)
-        living_cost = st.number_input("ค่าครองชีพมาตรฐาน (บาท)", value=7000, step=500)
+    # แจ้งเตือนเมื่อ DSR > 50% หรือ ดาวน์ < 10%
+    if dsr_calc > 50.0 or down_pct < 10.0:
+        st.markdown(f"""
+        <div class="alert-pdpa">
+            ⚠️ <b>เงื่อนไขพิเศษความเสี่ยง:</b> ลูกค้ามี DSR = {dsr_calc:.1f}% (>50%) หรือ เงินดาวน์ = {down_pct:.1f}% (<10%)<br>
+            <i>แนะนำให้ทำบันทึก "ยินยอมยืนยันสถานที่และติดตั้งอุปกรณ์ติดตามตำแหน่ง (GPS)" เพื่อลดความเสี่ยงการจัดรถส่งต่อ/ข้ามแดน (ลด Risk > 80%)</i>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # คำนวณสูตรตามตาราง SRD Calculator
-    total_income = salary + extra_income
-    total_debt_all = existing_debt + new_installment
-    dsr = (total_debt_all / total_income) * 100 if total_income > 0 else 0
-    multiplier = salary / new_installment if new_installment > 0 else 0
-    net_free_cash = total_income - (existing_debt + living_cost + new_installment)
+    gps_pdpa_consent = st.checkbox(
+        "✅ ลูกค้ายินยอมให้ยืนยันสินค้าเช่าซื้อตามเงื่อนไขสินเชื่อ / ยืนยันสถานที่และติดตั้งอุปกรณ์ติดตามตำแหน่ง (GPS) ผ่านช่องทางออนไลน์ ตาม พ.ร.บ. คุ้มครองข้อมูลส่วนบุคคล (PDPA)", 
+        value=True if (dsr_calc > 50.0 or down_pct < 10.0) else False
+    )
 
-    st.markdown("### สรุปความสามารถทางการเงิน")
-    st.markdown(f"**รวมรายได้:** `{total_income:,.0f}` บาท")
-    st.markdown(f"**สัดส่วนภาระหนี้ต่อรายได้ (DSR):** `{dsr:.1f}%` *(เกณฑ์: ไม่ควรเกิน 35-50%)*")
-    st.markdown(f"**เงินเดือนต่อค่างวด (Multiplier):** `{multiplier:.1f} เท่า` *(เกณฑ์: > 2.5 เท่า)*")
-    st.markdown(f"**เงินคงเหลือสุทธิ (Net Free Cash):** `{net_free_cash:,.0f} บาท`")
+    shared_history = st.number_input("ความเชื่อมโยงสัญญาอื่นใน 90 วัน (เบอร์/ที่อยู่ตรงกัน)", min_value=0, value=0, step=1)
+    r_score, r_flags, r_verdict = evaluate_fraud_rules(category, down_pct, emp_type, shared_history, dsr_calc, gps_pdpa_consent)
 
-    # ประเมินผลเบื้องต้น
-    if net_free_cash > 0 and dsr <= 50:
-        st.success("🟢 PASS (ความสามารถทางการเงินผ่านเกณฑ์เบื้องต้น)")
-    else:
-        st.error("🔴 HIGH RISK / CONDITIONAL (ภาระหนี้สูงหรือเงินเหลือไม่พอ)")
+    # ------------------------------------------
+    # ข้อมูลคู่สมรส
+    # ------------------------------------------
+    st.write("---")
+    has_spouse = st.checkbox("💍 ข้อมูลคู่สมรส (Spouse)", value=False)
+    spouse_summary = "ไม่มีข้อมูลคู่สมรส / โสด"
+    if has_spouse:
+        st.caption("ข้อมูลคู่สมรสช่วยเพิ่มความน่าเชื่อถือและความสามารถในการผ่อนชำระของครัวเรือน")
+        sp1, sp2 = st.columns(2)
+        with sp1:
+            spouse_name = st.text_input("ชื่อ-นามสกุล คู่สมรส", value="")
+            spouse_status = st.selectbox("สถานะสมรส", ["จดทะเบียนสมรส", "อยู่กินกันฉันสามีภริยา (ไม่จดทะเบียน)", "หย่าร้าง / แยกกันอยู่"])
+            spouse_job = st.text_input("อาชีพคู่สมรส", value="พนักงานบริษัท")
+        with sp2:
+            spouse_income = st.number_input("รายได้คู่สมรส (บาท/เดือน)", value=15000, step=1000)
+            spouse_debt = st.number_input("ภาระหนี้คู่สมรส (บาท/เดือน)", value=2000, step=500)
+            spouse_support = st.radio("ร่วมรับผิดชอบค่างวดหรือไม่", ["ร่วมส่งค่างวด", "รับรู้แต่ไม่ร่วมส่ง", "ไม่รับรู้การซื้อรถ"], horizontal=True)
+        spouse_summary = f"คู่สมรส: {spouse_name} ({spouse_status}) | อาชีพ: {spouse_job} | รายได้: {spouse_income:,.0f} บาท | หนี้: {spouse_debt:,.0f} บาท | สถานะการผ่อน: {spouse_support}"
 
-with col2:
-    st.subheader("🔍 3. AI วิเคราะห์ Statement & ความเสี่ยง")
+    # ------------------------------------------
+    # ข้อมูลคนค้ำประกัน
+    # ------------------------------------------
+    st.write("---")
+    has_guarantor = st.checkbox("👥 มีคนค้ำประกัน (Guarantor)", value=True)
+    g_text = "ไม่มีคนค้ำประกัน"
+    if has_guarantor:
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            g_name = st.text_input("ชื่อ-นามสกุล คนค้ำประกัน", value="สมศรี ใจดี")
+            g_rel = st.selectbox("ความสัมพันธ์คนค้ำ", ["บิดา/มารดา (สายเลือดตรง)", "คู่สมรส", "พี่น้องแท้ๆ", "เพื่อนร่วมงาน/นายจ้าง", "คนรู้จักทั่วไป"])
+            g_job = st.text_input("อาชีพคนค้ำ", value="พนักงานประจำ / ข้าราชการ")
+        with gc2:
+            g_phone = st.text_input("เบอร์โทรคนค้ำ", value="089-xxxxxxx")
+            g_inc = st.number_input("รายได้สุทธิคนค้ำ (บาท)", value=22000, step=1000)
+            g_house = st.selectbox("ที่อยู่อาศัยคนค้ำ", ["อยู่บ้านเดียวกับผู้กู้", "มีบ้านของตนเอง", "บ้านเช่า"])
+        g_text = f"คนค้ำ: {g_name} ({g_rel}) | โทร: {g_phone} | อาชีพ: {g_job} | รายได้: {g_inc:,.0f} บาท | ที่อยู่: {g_house}"
+
+    # ------------------------------------------
+    # บุคคลอ้างอิง
+    # ------------------------------------------
+    st.write("---")
+    st.subheader("📞 3. บุคคลอ้างอิง (References)")
+    rf1, rf2 = st.columns(2)
+    with rf1:
+        ref1_name = st.text_input("บุคคลอ้างอิงคนที่ 1 (ชื่อ-สกุล)", value="สมศักดิ์ ใจดี")
+        ref1_rel = st.text_input("ความสัมพันธ์ 1", value="พี่ชาย")
+        ref1_tel = st.text_input("เบอร์โทร 1", value="086-xxxxxxx")
+    with rf2:
+        ref2_name = st.text_input("บุคคลอ้างอิงคนที่ 2 (ชื่อ-สกุล)", value="สมใจ มิตรแท้")
+        ref2_rel = st.text_input("ความสัมพันธ์ 2", value="หัวหน้างาน")
+        ref2_tel = st.text_input("เบอร์โทร 2", value="082-xxxxxxx")
+    ref_summary = f"อ้างอิง 1: {ref1_name} ({ref1_rel} - {ref1_tel}) | อ้างอิง 2: {ref2_name} ({ref2_rel} - {ref2_tel})"
+
+with col_ai:
+    st.subheader("📋 4. เช็คลิสต์เอกสารสำคัญ & ตรวจสอบหน้าร้าน")
     
-    uploaded_file = st.file_uploader("อัปโหลดภาพ Statement หรือสลิปเงินเดือน", type=["png", "jpg", "jpeg"])
-    customer_story = st.text_area("ข้อมูลประกอบ/คำให้การลูกค้า (ถ้ามี)", placeholder="เช่น ลูกค้าแจ้งว่าขายของหน้าร้าน คนที่มาด้วยเป็นพี่ชาย...", height=150)
+    # เช็คลิสต์เอกสารสำคัญพร้อมจุดยืนยันตัวตนและพิกัดงาน
+    c_doc1 = st.checkbox("1. 📸 ภาพถ่ายยืนยันตัวตนหน้าร้าน (Identity Selfie คู่บัตร ปชช. ตัวจริง)", value=True, help="ป้องกันมิจฉาชีพนำเอกสารบุคคลอื่นมายื่นกู้โดยเจ้าตัวไม่รู้")
+    c_doc2 = st.checkbox("2. 📑 บัตรประชาชน + สำเนาทะเบียนบ้าน", value=True)
+    c_doc3 = st.checkbox("3. 🏦 รายการเดินบัญชีธนาคาร (Statement ย้อนหลัง)", value=True)
+    c_doc4 = st.checkbox("4. 📊 หน้าตรวจสอบประวัติเครดิตบูโร (NCB Report)", value=False)
+    c_doc5 = st.checkbox("5. 💵 สลิปเงินเดือน / หนังสือรับรองรายได้ / ทะเบียนการค้า", value=True)
+    c_doc6 = st.checkbox("6. 📍 รูปถ่ายที่พักอาศัย + หมุด Google Maps / รูปสต็อกสินค้า-แผงค้าจริง", value=True if emp_type in ["ฟรีแลนซ์/รับจ้างทั่วไป", "เจ้าของกิจการ/ค้าขายหน้าร้าน"] else False, help="จำเป็นสำหรับอาชีพอิสระ/ค้าขาย เพื่อยืนยันแหล่งที่มาของรายได้จริง")
 
-    if uploaded_file and st.button("🚀 เริ่มวิเคราะห์ความเสี่ยงด้วย AI", type="primary", use_container_width=True):
-        if GEMINI_API_KEY == "ใส่_API_KEY_ของคุณที่นี่":
-            st.error("AQ.Ab8RN6LlskBivIktEyXkIZTplOe3FlyAO4ECgJUvE6Wn7gimHQ")
+    # ช่องกรอกลิงก์หรือพิกัดสถานที่ทำงานจริง
+    workplace_location_note = st.text_input("📌 พิกัด Google Maps หรือสถานที่ทำงาน/ที่พักจริง", placeholder="เช่น https://maps.app.goo.gl/... หรือ หน้าร้านตลาดสดเทศบาล ซอย 3")
+
+    attached_docs = []
+    missing_docs = []
+    for doc_name, is_checked in [
+        ("ภาพเซลฟี่คู่บัตรหน้าร้าน (Identity Verification)", c_doc1),
+        ("บัตรประชาชน+ทะเบียนบ้าน", c_doc2),
+        ("สเตทเม้นธนาคาร", c_doc3),
+        ("หน้าตรวจ NCB", c_doc4),
+        ("สลิปเงินเดือน/หลักฐานรายได้", c_doc5),
+        ("พิกัดที่ทำงาน/รูปสต็อกแผงค้า (Workplace Verification)", c_doc6)
+    ]:
+        if is_checked:
+            attached_docs.append(doc_name)
         else:
-            image = Image.open(uploaded_file)
-            st.image(image, caption="เอกสารที่อัปโหลด", use_container_width=True)
+            missing_docs.append(doc_name)
 
-            prompt = f"""
-            คุณคือ Head of Credit Risk & Fraud Intelligence — SRD Motor Finance
-            ใช้หลักการห้ามสรุปว่าทุจริตจากสัญญาณเดียว ให้ประเมินภาพรวม:
-            1. แยกรายได้จริง (Verified Income) ออกจากเงินหมุน
-            2. ตรวจสอบพฤติกรรมเงินเข้า-ออก (Cash Flow Behavior)
-            3. ตรวจสอบสัญญาณผิดปกติ เช่น การโอนถี่ช่วงดึก หรือแพตเทิร์นเสี่ยง
-            4. สรุปผลความเสี่ยง (Risk Score 0-100) และคำถามสัมภาษณ์ 3 ข้อสำหรับเจ้าหน้าที่
+    doc_status_text = f"เอกสารที่แนบครบ: {', '.join(attached_docs) if attached_docs else 'ไม่มี'} | เอกสารที่ยังขาด: {', '.join(missing_docs) if missing_docs else 'ไม่มี (ครบสมบูรณ์)'}"
+    st.caption(f"📁 **สถานะเอกสาร:** {doc_status_text}")
 
-            ข้อมูลทางการเงินของผู้กู้:
-            - รวมรายได้: {total_income} บาท
-            - ค่างวดรถใหม่: {new_installment} บาท
-            - ข้อมูลเพิ่มเติม: {customer_story}
-            """
+    st.write("---")
+    st.subheader("🔍 5. อัปโหลดภาพเอกสาร & AI วิเคราะห์ 13 โมดูล")
+    
+    uploaded_files = st.file_uploader(
+        "อัปโหลดเอกสารทั้งหมด (เซลฟี่หน้าร้าน, Statement, สลิป, บัตร ปชช., รูปสต็อก/แผงค้า)", 
+        type=["png", "jpg", "jpeg"], 
+        accept_multiple_files=True
+    )
+    
+    customer_story = st.text_area(
+        "บันทึกบริบทหน้าร้าน / พฤติกรรมลูกค้า", 
+        placeholder="เช่น ลูกค้ามากับคุณแม่และคู่สมรส เซลฟี่หน้าร้านคู่บัตรเรียบร้อย แจ้งว่าจะนำรถไปใช้วิ่งไปทำงานโรงงาน...", 
+        height=80
+    )
 
-            with st.spinner("AI กำลังวิเคราะห์เอกสารและพฤติกรรม..."):
-                try:
-                    model = genai.GenerativeModel("gemini-1.5-flash")
-                    response = model.generate_content([prompt, image])
+    if uploaded_files:
+        st.caption(f"📁 แนบไฟล์ภาพแล้ว {len(uploaded_files)} ไฟล์")
+
+    if uploaded_files and st.button("🚀 รันระบบวิเคราะห์ความเสี่ยงและบันทึกข้อมูล", type="primary", use_container_width=True):
+        if not api_key_input or not selected_model:
+            st.error("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนกดวิเคราะห์")
+        else:
+            try:
+                genai.configure(api_key=api_key_input.strip())
+                images_to_send = [Image.open(f) for f in uploaded_files]
+
+                full_srd_prompt = f"""
+# SRD CREDIT INVESTIGATION ENGINE (FULL 13 MODULES)
+## ระบบวิเคราะห์สินเชื่อเชิงพฤติกรรมและตรวจจับการทุจริต — บริษัท สิระเดชมอเตอร์เซลล์ จำกัด
+
+### ROLE & PRINCIPLES
+คุณคือ “Head of Credit Risk & Fraud Intelligence — SRD Motor Finance”
+- เป้าหมาย: อนุมัติลูกค้าที่มีเจตนาและสามารถผ่อนได้จริง พร้อมดักจับขบวนการทุจริตจัดตั้ง
+- หลักการ: ห้ามเชื่อข้อมูลแหล่งเดียว (Cross-Validation ทุกจุด) | ห้ามสรุปว่าทุจริตจากสัญญาณเดียว (ดู Pattern) | วิเคราะห์ Customer Story ความสอดคล้อง
+
+---
+
+[ข้อมูลโครงสร้างสินเชื่อเช่าซื้อ]
+- รุ่นรถ: {model_name} (กลุ่ม {category})
+- ราคาสด: {cash_price:,.0f} บาท | เงินดาวน์: {down_payment:,.0f} บาท ({down_pct:.1f}%)
+- ยอดจัดไฟแนนซ์: {financing_amount:,.0f} บาท | ดอกเบี้ย: {interest_rate_pm:.2f}% ต่อเดือน
+- ค่างวดที่เรียกเก็บจริง: {monthly_installment:,.0f} บาท x {term_months} งวด
+- ยอดหนี้รวมทั้งสิ้น: {actual_total_debt:,.0f} บาท
+- 🏆 ยอดเช่าซื้อรวมทั้งสัญญา (ดาวน์ + ทะเบียน + ค่างวดทุกงวด): {total_hire_purchase:,.0f} บาท
+- รวมจ่ายวันออกรถ: {total_cash_to_drive:,.0f} บาท
+
+[ข้อมูลผู้กู้และมาตรการควบคุมความเสี่ยง]
+- ผู้กู้: {applicant_name} (อายุ {applicant_age} ปี) | โทร: {applicant_phone} | ที่พัก: {residence_status}
+- อาชีพ: {emp_type} | เงินเดือน {salary:,.0f} บาท | เสริม {extra_income:,.0f} บาท | หนี้เดิม {existing_debt:,.0f} บาท | DSR: {dsr_calc:.1f}%
+- พิกัด/สถานที่ทำงานจริง: {workplace_location_note if workplace_location_note else 'ไม่ระบุพิกัด'}
+- เงื่อนไขติดตามตำแหน่ง (GPS / PDPA Tracking): {'ยินยอมให้ติดตามตำแหน่งตามเงื่อนไขสินเชื่อ (PDPA Compliant)' if gps_pdpa_consent else 'ไม่มียินยอม GPS'}
+- ผลประเมิน Rule Engine: Score = {r_score}, Verdict = {r_verdict}, Flags = {r_flags}
+- ข้อมูลคู่สมรส: {spouse_summary}
+- ข้อมูลคนค้ำประกัน: {g_text}
+- บุคคลอ้างอิง: {ref_summary}
+- สถานะเช็คลิสต์เอกสาร: {doc_status_text}
+- คำให้การและพฤติกรรมหน้าร้าน: {customer_story}
+
+---
+
+### REQUIRED OUTPUT (สรุปรายงานตามโครงสร้าง 10 ข้อนี้)
+
+## 1. CUSTOMER & HOUSEHOLD PROFILE
+- สรุปตัวตน อาชีพ รายได้แท้จริงของผู้กู้ คู่สมรส และคนค้ำประกัน
+
+## 2. IDENTITY & WORKPLACE VERIFICATION (MODULE 01, 02, 03)
+- ตรวจสอบภาพถ่ายเซลฟี่หน้าร้านคู่บัตรประชาชน (ยืนยันว่าผู้สมัคร = คนในบัตร = ผู้ใช้รถจริง)
+- ตรวจสอบความสมเหตุสมผลของพิกัดที่ทำงาน/ภาพสต็อกสินค้า-แผงค้า ({workplace_location_note}) กับอาชีพที่ระบุ
+
+## 3. VERIFIED FACTS vs UNVERIFIED CLAIMS (ตรวจสอบตามเช็คลิสต์)
+- ระบุข้อเท็จจริงที่มีเอกสารยืนยัน เทียบกับรายการที่ยังขาดเอกสาร ({', '.join(missing_docs) if missing_docs else 'เอกสารครบ'})
+
+## 4. MONEY FLOW & CASH FLOW REALITY (MODULE 04 & 05)
+- สรุป Money In -> Money Out -> Money Remain (ประเมินว่าเงินเพียงพอกับค่างวด {monthly_installment:,.0f} บาท และยอดเช่าซื้อรวม {total_hire_purchase:,.0f} บาท หรือไม่)
+
+## 5. FRAUD, GAMBLING & ASSET RISK CHECK (MODULE 06, 07, 08, 09)
+- **Gambling:** ตรวจสอบความถี่ เวลาโอนดึก และ Money Cycling (ห้ามตัดสินจากเศษสตางค์รายการเดียว)
+- **Nominee / Handover / Export Risk:** ประเมินความเสี่ยงดาวน์แลกเงิน หรือการส่งรถข้ามแดน และผลกระทบของการมี/ไม่มีความยินยอม GPS ติดตามรถตาม PDPA
+- **Double Financing:** ความผิดปกติของเอกสาร
+
+## 6. GUARANTOR & SPOUSE MITIGATION POWER
+- ประเมินพลังการหักล้างจุดอ่อนของผู้กู้โดยคนค้ำและคู่สมรส (เช่น ผู้กู้งานอิสระแต่คนค้ำมั่นคง/คู่สมรสช่วยส่ง)
+
+## 7. CONTRADICTION TABLE (MODULE 12)
+| มิติข้อมูล | แหล่งที่ 1 | แหล่งที่ 2 | ผลเปรียบเทียบ | ระดับความขัดแย้ง |
+
+## 8. RISK SCORING & FINAL DECISION (MODULE 13 - 100 คะแนน)
+- Identity (15), Residence (10), Employment (15), Income (15), Cash Flow (15), Credit/NCB (10), Gambling/Distress (10), Nominee (5), Double Financing (5)
+- หักลบความเสี่ยงด้วย Guarantor/Spouse Deduction และมาตรการ GPS Tracking
+- **ผลการตัดสิน:** 🟢 PASS (0-20) / 🟡 PASS WITH CONTROL (21-40) / 🟠 CONDITIONAL (41-60) / 🔴 HIGH RISK (61-75) / ⛔ REJECT (76-100)
+
+## 9. 30-SECOND SOFT INTERVIEW (คำถามโทนบริการ ไม่สอบสวน)
+- คำถามผู้ซื้อ 2 ข้อ (ถามเส้นทางใช้งานจริง / รอบตัดบิลที่สะดวกชำระ)
+- คำถามคนค้ำประกัน 1 ข้อ (ถามความผูกพันเชิงบวก)
+
+## 10. SUMMARY RECOMMENDATION FOR SALES
+- สรุปแนวทางปิดการขายอย่างปลอดภัยสำหรับเซลส์
+"""
+
+                with st.spinner(f"AI ({selected_model}) กำลังประมวลผล 13 โมดูล และบันทึกข้อมูล..."):
+                    model = genai.GenerativeModel(selected_model)
+                    response = model.generate_content([full_srd_prompt] + images_to_send)
+                    
+                    # บันทึกข้อมูลใบสมัครลงไฟล์ CSV ทันที
+                    record = {
+                        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Applicant_Name": applicant_name,
+                        "Applicant_Phone": applicant_phone,
+                        "Model": model_name,
+                        "Cash_Price": cash_price,
+                        "Down_Payment": down_payment,
+                        "Monthly_Installment": monthly_installment,
+                        "Term_Months": term_months,
+                        "Total_Debt": actual_total_debt,
+                        "Total_Hire_Purchase": total_hire_purchase,
+                        "Applicant_Salary": salary,
+                        "Applicant_Job": emp_type,
+                        "DSR_Pct": f"{dsr_calc:.1f}%",
+                        "GPS_PDPA_Consent": "YES" if gps_pdpa_consent else "NO",
+                        "Workplace_Location": workplace_location_note,
+                        "Spouse_Info": spouse_summary,
+                        "Guarantor_Info": g_text,
+                        "Ref_1": f"{ref1_name} ({ref1_rel} - {ref1_tel})",
+                        "Ref_2": f"{ref2_name} ({ref2_rel} - {ref2_tel})",
+                        "Attached_Docs": ", ".join(attached_docs),
+                        "Rule_Engine_Verdict": r_verdict
+                    }
+                    save_assessment_record(record)
+
                     st.write("---")
-                    st.markdown("### 📋 ผลการวิเคราะห์จาก AI")
+                    st.success("💾 บันทึกข้อมูลใบสมัครและยอดเช่าซื้อลงในฐานข้อมูล Data Log เรียบร้อยแล้ว")
+                    st.markdown("### 📋 รายงานผลการประเมินสินเชื่อเชิงลึก (SRD Engine Report)")
                     st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"เกิดข้อผิดพลาด: {e}")
+            except Exception as e:
+                st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {e}")
