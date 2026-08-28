@@ -7,29 +7,10 @@ from PIL import Image
 import io
 import base64
 
-# === SDK Compatible (รองรับทั้งเก่าและใหม่) ===
-IS_NEW_SDK = True
-try:
-    from google import genai
-    from google.genai import types
-    from google.genai.errors import ClientError
-except ImportError:
-    IS_NEW_SDK = False
-    import google.generativeai as genai
-    # สร้าง dummy types เพื่อไม่ให้โค้ดพัง
-    class _DummyTypes:
-        class Part:
-            @staticmethod
-            def from_bytes(data, mime_type):
-                return {"data": data, "mime_type": mime_type}
-        class GenerateContentConfig:
-            def __init__(self, temperature=0.2, max_output_tokens=8192):
-                self.temperature = temperature
-                self.max_output_tokens = max_output_tokens
-    types = _DummyTypes()
-    class ClientError(Exception):
-        pass
-    print("⚠️ ใช้ SDK เก่า (google-generativeai) แทน")
+# === NEW SDK (Interactions API compatible) ===
+from google import genai
+from google.genai import types
+from google.genai.errors import ClientError
 
 # PDF Export
 from reportlab.lib.pagesizes import A4
@@ -123,45 +104,24 @@ PREFERRED_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest
 
 @st.cache_resource(show_spinner=False)
 def get_client_and_model(api_key_hash: str):
-    if IS_NEW_SDK:
-        client = genai.Client(api_key=api_key)
-        available = []
-        try:
-            for m in client.models.list():
-                name = m.name.replace("models/", "") if hasattr(m, 'name') else str(m)
-                available.append(name)
-        except:
-            available = PREFERRED_MODELS
-        selected = None
-        for pref in PREFERRED_MODELS:
-            if pref in available:
-                selected = pref
-                break
-        if not selected and available:
-            selected = available[0]
-        if not selected:
-            selected = PREFERRED_MODELS[0]
-        return client, selected, available
-    else:
-        # Old SDK
-        genai.configure(api_key=api_key)
-        available = []
-        try:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    available.append(m.name.replace("models/", ""))
-        except:
-            available = PREFERRED_MODELS
-        selected = None
-        for pref in PREFERRED_MODELS:
-            if pref in available:
-                selected = pref
-                break
-        if not selected and available:
-            selected = available[0]
-        if not selected:
-            selected = PREFERRED_MODELS[0]
-        return None, selected, available
+    client = genai.Client(api_key=api_key)
+    available = []
+    try:
+        for m in client.models.list():
+            name = m.name.replace("models/", "") if hasattr(m, 'name') else str(m)
+            available.append(name)
+    except:
+        available = PREFERRED_MODELS
+    selected = None
+    for pref in PREFERRED_MODELS:
+        if pref in available:
+            selected = pref
+            break
+    if not selected and available:
+        selected = available[0]
+    if not selected:
+        selected = PREFERRED_MODELS[0]
+    return client, selected, available
 
 if not api_key:
     st.error("❌ ไม่พบ GEMINI_API_KEY ใน Secrets - ไปตั้งที่ Streamlit Cloud > Settings > Secrets")
@@ -462,7 +422,7 @@ with left:
                 ให้วิเคราะห์ตามโครงสร้าง 10 ข้อ: Customer Profile, Identity & Workplace, Verified vs Unverified, Money Flow, Fraud Gambling Nominee, Guarantor Mitigation, Contradiction Table, Risk Scoring 100 คะแนน, 30-sec Interview, Summary
                 ตอบเป็นภาษาไทย
                 """
-                def call_gemini_v2(prompt_text, pil_images, model_name, client_obj):
+                def call_gemini_v2(prompt_text, pil_images, model_name):
                     contents = [prompt_text]
                     for img in pil_images:
                         if max(img.size) > 1600:
@@ -486,7 +446,7 @@ with left:
                         return {"ok": False, "error": "API_ERROR", "raw": msg}
 
                 with st.spinner(f"AI ({selected_model}) กำลังวิเคราะห์ 13 โมดูล..."):
-                    result = call_gemini_v2(prompt, st.session_state.compressed_for_ai, selected_model, client)
+                    result = call_gemini_v2(prompt, st.session_state.compressed_for_ai, selected_model)
                 if result["ok"]:
                     st.session_state.ai_result_text = result["text"]
                     st.success("✅ วิเคราะห์สำเร็จ")
