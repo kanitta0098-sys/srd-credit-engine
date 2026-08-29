@@ -4,5 +4,5 @@ openpyxl
 Pillow
 pillow-heif
 reportlab
-google-genai
 google-generativeai
+google-genai
