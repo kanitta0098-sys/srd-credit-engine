@@ -14,7 +14,7 @@ def _compress_mobile(img, max_side=1280, max_bytes=1200000):
         if b.tell()<=max_bytes: b.seek(0); return Image.open(b)
     b.seek(0); return Image.open(b)
 
-st.set_page_config(page_title="SRD Hybrid v2.9 - ตัวหนังสือพอดี ตารางกระชับ ดึงราคาตามรุ่น", layout="wide", page_icon="🏍️")
+st.set_page_config(page_title="SRD Hybrid v3.0 - Fix Model 404 gemini-2.5-flash → 2.0-flash", layout="wide", page_icon="🏍️")
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700;800&display=swap');
@@ -130,20 +130,66 @@ def save_record(rec):
 
 # SIDEBAR - คงเดิม
 with st.sidebar:
-    st.markdown("### 🏍️ SRD Hybrid v2.9")
-    api_key=st.text_input("GEMINI API Key", value=st.secrets.get("GEMINI_API_KEY","") if hasattr(st,'secrets') else "", type="password")
+    st.markdown("### 🏍️ SRD Hybrid v3.0 Fix Model")
+    api_key=st.text_input("GEMINI API Key", value=st.secrets.get("GEMINI_API_KEY","") if hasattr(st,'secrets') else "", type="password", help="ใช้ GEMINI API Key จาก https://aistudio.google.com/app/apikey")
     model_sel=None; usable=[]
+    # รายการโมเดลที่ยังใช้งานได้ 2026 (แก้ไข Error 404 gemini-2.5-flash is no longer available)
+    FALLBACK_MODELS = [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-latest",
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash-lite",
+    ]
     if api_key and len(api_key)>10:
         try:
             import google.generativeai as genai
             genai.configure(api_key=api_key.strip())
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    usable.append(m.name.replace("models/",""))
+            try:
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        name = m.name.replace("models/","")
+                        # ข้ามโมเดลที่ Google ประกาศเลิกใช้
+                        if "2.5-flash" in name and "lite" not in name:
+                            continue
+                        if name not in usable:
+                            usable.append(name)
+            except Exception as e:
+                st.warning(f"list_models error: {e} - ใช้ fallback list")
+            # รวม fallback ที่ยังใช้ได้
+            for fb in FALLBACK_MODELS:
+                if fb not in usable:
+                    usable.append(fb)
+            # เรียงให้ 2.0-flash และ 1.5-flash อยู่บน
+            usable = sorted(usable, key=lambda x: (0 if "2.0-flash" in x else 1 if "1.5-flash" in x else 2))
             if usable:
-                model_sel=st.selectbox("🤖 โมเดล AI", usable, index=0)
-                st.success(f"✅ {model_sel}")
-        except Exception as e: st.error(f"API Key Error: {e}")
+                # default เลือก gemini-2.0-flash หรือ 1.5-flash
+                default_idx = 0
+                for i, name in enumerate(usable):
+                    if "2.0-flash" == name:
+                        default_idx = i
+                        break
+                model_sel=st.selectbox("🤖 โมเดล AI (แก้ 404: 2.5-flash → 2.0-flash/1.5-flash)", usable, index=default_idx)
+                st.success(f"✅ {model_sel} พร้อมใช้งาน")
+            else:
+                model_sel = "gemini-2.0-flash"
+                st.warning(f"⚠️ ใช้ fallback {model_sel}")
+        except Exception as e: 
+            st.error(f"API Key Error: {e}")
+            # fallback ยังให้ใช้งานได้
+            usable = FALLBACK_MODELS
+            model_sel = st.selectbox("🤖 โมเดล AI (fallback)", usable, index=0)
+    st.markdown("---")
+    uploaded_excel=st.file_uploader("อัปโหลด Motorcycle-Price-All-Models.xlsx", type=["xlsx","xls"], key="upload_excel_master_v29")
+    df_master, yamaha_map, debug_list=load_master_models_robust(file_obj=uploaded_excel)
+    for d in debug_list:
+        if "✅" in d: st.success(d)
+    st.caption(f"รุ่นรถครบ {len(df_master)} รุ่น")
+    if st.button("🔄 รีเซ็ตฟอร์มว่าง", use_container_width=True):
+        st.session_state.clear(); st.rerun()
     st.markdown("---")
     uploaded_excel=st.file_uploader("อัปโหลด Motorcycle-Price-All-Models.xlsx", type=["xlsx","xls"], key="upload_excel_master_v29")
     df_master, yamaha_map, debug_list=load_master_models_robust(file_obj=uploaded_excel)
@@ -410,14 +456,35 @@ if uploaded or cam or st.checkbox("✅ ทดสอบโดยไม่ต้�
                     for f in uploaded: imgs.append(_compress_mobile(Image.open(f)))
                 if cam: imgs.append(_compress_mobile(Image.open(cam)))
                 full_prompt=f"""
-# SRD Hybrid v2.9
+# SRD Hybrid v3.0 Fix Model
 รุ่น {brand_model} รหัส {code_auto} ราคาสด {cash_price:,.0f} ดึงจากไฟล์ตามรุ่น Net {net_price:,.0f} ยอดจัด {financing:,.0f} Flat {flat_rate:.3f}% ค่างวด {monthly_raw:,.2f}→{monthly:,.0f} {round_type} ออกรถได้ {total_drive:,.0f}
 ผู้กู้ {f_name} {l_name} DSR {dsr:.1f}% {r_verdict} {r_score}
 """
-                with st.spinner(f"AI ({model_sel}) วิเคราะห์..."):
-                    model_ai=genai.GenerativeModel(model_sel)
-                    if imgs: resp=model_ai.generate_content([full_prompt]+imgs)
-                    else: resp=model_ai.generate_content(full_prompt)
+                with st.spinner(f"AI ({model_sel}) วิเคราะห์ 13 โมดูล..."):
+                    # FIX 404 This model models/gemini-2.5-flash is no longer available
+                    def run_with_fallback(prompt_text, images_list, primary_model):
+                        models_to_try = [primary_model] + ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.0-flash-lite", "gemini-3-flash-preview"]
+                        last_err = None
+                        for m_name in models_to_try:
+                            try:
+                                model_ai=genai.GenerativeModel(m_name)
+                                if images_list:
+                                    resp=model_ai.generate_content([prompt_text]+images_list)
+                                else:
+                                    resp=model_ai.generate_content(prompt_text)
+                                return resp, m_name
+                            except Exception as e:
+                                err_str = str(e)
+                                if "404" in err_str or "is no longer available" in err_str or "not found" in err_str.lower():
+                                    last_err = e
+                                    continue
+                                else:
+                                    raise e
+                        raise last_err if last_err else Exception("All models failed")
+                    resp, used_model = run_with_fallback(full_prompt, imgs, model_sel)
+                    if used_model != model_sel:
+                        st.warning(f"⚠️ {model_sel} ไม่พร้อมใช้งาน (404) - สลับไปใช้ {used_model} อัตโนมัติ")
+                        model_sel = used_model
                     save_record({
                         "Timestamp":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "Model":brand_model,
