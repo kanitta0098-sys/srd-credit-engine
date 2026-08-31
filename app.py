@@ -190,15 +190,7 @@ with st.sidebar:
     st.caption(f"รุ่นรถครบ {len(df_master)} รุ่น")
     if st.button("🔄 รีเซ็ตฟอร์มว่าง", use_container_width=True):
         st.session_state.clear(); st.rerun()
-    st.markdown("---")
-    uploaded_excel=st.file_uploader("อัปโหลด Motorcycle-Price-All-Models.xlsx", type=["xlsx","xls"], key="upload_excel_master_v29")
-    df_master, yamaha_map, debug_list=load_master_models_robust(file_obj=uploaded_excel)
-    for d in debug_list:
-        if "✅" in d: st.success(d)
-    st.caption(f"รุ่นรถครบ {len(df_master)} รุ่น")
-    if st.button("🔄 รีเซ็ตฟอร์มว่าง", use_container_width=True):
-        st.session_state.clear(); st.rerun()
-
+    
 st.markdown("""<div class="moto-card" style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px !important;"><div><div style="font-size:22px;font-weight:800;color:#FFF;">🏍️ SRD Credit Engine Hybrid v2.9</div><div style="font-size:12px;color:#38BDF8;">ตัวหนังสือพอดี 14px | ตารางกระชับ 2 คอลัมน์ 7+7 | ราคาสดดึงจาก Motorcycle-Price-All-Models.xlsx ตามรุ่น | ปัดเศษค่างวดขึ้นลงได้ | ค่าดำเนินการ ชุดแต่ง อื่นๆ | คู่สมรส 3 ตัวเลือก | 13 โมดูล + Fraud Engine</div></div><div><span style="background:#065F46;color:#6EE7B7;border-radius:20px;padding:5px 10px;font-size:11px;">● ONLINE</span> <span style="background:#1E3A8A;color:#93C5FD;border-radius:20px;padding:5px 10px;font-size:11px;">v2.9</span></div></div>""", unsafe_allow_html=True)
 
 # FALLBACK API
