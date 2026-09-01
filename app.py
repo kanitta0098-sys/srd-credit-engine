@@ -699,9 +699,9 @@ with tabs[0]:
     if brand_model != "[ว่าง] เลือกรุ่นรถ":
         selected = df_master[df_master["รุ่นรถ"].astype(str) == brand_model].iloc[0]
 
-    default_cash = safe_float(selected["ยอดจัด"]) if selected is not None else 49500
-    default_reg = safe_float(selected["ทะเบียน พรบ ประกัน"]) if selected is not None else 0
-    default_down = safe_float(selected["ราคาดาวน์"]) if selected is not None else 8900
+    default_cash = safe_float(selected["ยอดจัด"]) if selected is not None else 49500.0
+    default_reg = safe_float(selected["ทะเบียน พรบ ประกัน"]) if selected is not None else 0.0
+    default_down = safe_float(selected["ราคาดาวน์"]) if selected is not None else 8900.0
     default_flat = (
         safe_float(selected["ดอกเบี้ยต่อเดือน"]) * 100
         if selected is not None else 1.5
@@ -714,19 +714,19 @@ with tabs[0]:
         cash_price = st.number_input(
             "ราคาสดตัวรถ",
             min_value=0.0,
-            value=default_cash,
+            value=float(default_cash),
             step=100.0,
         )
         extra_fee = st.number_input(
             "ค่าดำเนินการ / ชุดแต่ง / อื่น ๆ",
             min_value=0.0,
-            value=default_reg,
+            value=float(default_reg),
             step=100.0,
         )
         down_payment = st.number_input(
             "เงินดาวน์",
             min_value=0.0,
-            value=default_down,
+            value=float(default_down),
             step=100.0,
         )
 
@@ -734,7 +734,7 @@ with tabs[0]:
         flat_rate = st.number_input(
             "Flat Rate ต่อเดือน (%)",
             min_value=0.0,
-            value=default_flat,
+            value=float(default_flat),
             step=0.05,
             format="%.3f",
         )
@@ -834,17 +834,13 @@ with tabs[1]:
             ],
         )
     with c2:
-        salary = st.number_input("เงินเดือน", min_value=0.0, step=500.0)
+        salary = st.number_input("เงินเดือน", min_value=0.0, value=0.0, step=500.0)
     with c3:
-        extra_income = st.number_input("รายได้เสริม", min_value=0.0, step=500.0)
+        extra_income = st.number_input("รายได้เสริม", min_value=0.0, value=0.0, step=500.0)
     with c4:
-        existing_debt = st.number_input("หนี้เดิม/เดือน", min_value=0.0, step=100.0)
+        existing_debt = st.number_input("หนี้เดิม/เดือน", min_value=0.0, value=0.0, step=100.0)
 
-    living_cost = st.number_input(
-        "ค่าใช้ชีวิต/เดือน",
-        min_value=0.0,
-        step=500.0,
-    )
+    living_cost = st.number_input("ค่าใช้ชีวิต/เดือน", min_value=0.0, value=0.0, step=500.0)
 
     total_income = salary + extra_income
 
@@ -1009,10 +1005,7 @@ with tabs[3]:
     st.markdown("---")
     st.markdown("#### 🧪 What-if Simulator")
 
-    whatif_down = st.number_input(
-        "ทดลองเงินดาวน์",
-        min_value=0.0,
-        value=float(deal["down_payment"] if "down_payment" in deal else down_payment),
+    whatif_down = st.number_input("ทดลองเงินดาวน์", min_value=0.0, value=float(deal["down_payment"] if "down_payment" in deal else down_payment), step=100.0,
         step=100.0,
         key="whatif_down",
     )
