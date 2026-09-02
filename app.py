@@ -1,1248 +1,513 @@
+
 import streamlit as st
-import os
-import io
-import math
-import re
-import json
-import uuid
-import pandas as pd
+import os, io, pandas as pd, math
 from datetime import datetime
-from pathlib import Path
 from PIL import Image
-
 try:
-    import pillow_heif
-    pillow_heif.register_heif_opener()
-except Exception:
-    pass
+    import pillow_heif; pillow_heif.register_heif_opener()
+except: pass
+def _compress_mobile(img, max_side=1280, max_bytes=1200000):
+    img=img.convert("RGB")
+    if max(img.size)>max_side: img.thumbnail((max_side,max_side), Image.LANCZOS)
+    for q in [75,65,55,40]:
+        b=io.BytesIO(); img.save(b, format="JPEG", quality=q, optimize=True)
+        if b.tell()<=max_bytes: b.seek(0); return Image.open(b)
+    b.seek(0); return Image.open(b)
 
-
-# ============================================================
-# SRD CREDIT ENGINE V3
-# Refined architecture:
-# - Deal / Customer / Evidence / Risk / Decision
-# - Separate affordability, fraud, data-quality and decision logic
-# - Explainable results
-# - Human review / override
-# - CSV audit history (upgradeable to DB later)
-# ============================================================
-
-APP_VERSION = "3.0.1-refined-fixed"
-HISTORY_FILE = "srd_credit_assessment_history.csv"
-
-st.set_page_config(
-    page_title=f"SRD Credit Engine {APP_VERSION}",
-    page_icon="🏍️",
-    layout="wide",
-)
-
-# -----------------------------
-# UI
-# -----------------------------
+st.set_page_config(page_title="SRD Hybrid v3.0 - Fix Model 404 gemini-2.5-flash → 2.0-flash", layout="wide", page_icon="🏍️")
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700;800&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Sarabun', sans-serif !important;
-}
-.stApp {
-    background: #0F172A;
-    color: #E2E8F0;
-}
-.block-container {
-    max-width: 1500px !important;
-    padding-top: 1rem !important;
-}
-.srd-card {
-    background: #1E293B;
-    border: 1px solid #334155;
-    border-radius: 14px;
-    padding: 16px;
-    margin-bottom: 12px;
-}
-.srd-title {
-    font-size: 28px;
-    font-weight: 800;
-}
-.srd-subtitle {
-    color: #94A3B8;
-    font-size: 13px;
-}
-.status {
-    border-radius: 10px;
-    padding: 12px 16px;
-    font-weight: 800;
-    font-size: 20px;
-    text-align: center;
-}
-.status-green {
-    background: #064E3B;
-    color: #A7F3D0;
-    border: 1px solid #10B981;
-}
-.status-yellow {
-    background: #78350F;
-    color: #FDE68A;
-    border: 1px solid #F59E0B;
-}
-.status-red {
-    background: #7F1D1D;
-    color: #FECACA;
-    border: 1px solid #EF4444;
-}
-.status-blue {
-    background: #1E3A8A;
-    color: #BFDBFE;
-    border: 1px solid #3B82F6;
-}
-.small-note {
-    color: #94A3B8;
-    font-size: 12px;
-}
-.reason {
-    background: #0F172A;
-    border: 1px solid #334155;
-    border-radius: 8px;
-    padding: 9px 12px;
-    margin: 5px 0;
-}
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700;800&display=swap');
+html, body, [class*="css"] { font-family:'Sarabun', sans-serif !important; }
+.stApp { background:#0F172A !important; color:#E2E8F0 !important; }
+/* Fix เมนูไม่หาย */
+header[data-testid="stHeader"] {background:transparent !important; height:38px !important;}
+div[data-testid="stToolbar"] {display:none !important;}
+div[data-testid="stHeaderActionElements"] {display:none !important;}
+#MainMenu {visibility:hidden !important;}
+footer {visibility:hidden !important;}
+button[kind="header"] {display:block !important; visibility:visible !important;}
+[data-testid="collapsedControl"] {display:block !important; visibility:visible !important;}
+.block-container { max-width:1480px !important; padding-top:0.2rem !important; padding-bottom:0.3rem !important;}
+/* FIX ตัวหนังสือหัวข้อย่อยเล็ก - เพิ่มขนาดให้พอดี */
+.moto-card { background:#1E293B !important; border:2px solid #334155 !important; border-radius:12px; padding:10px 12px !important; margin-bottom:8px !important; }
+.moto-card h3 { margin:5px 0 !important; padding:3px 0 !important; font-size:20px !important; font-weight:800 !important; }
+.label-col { font-weight:700 !important; font-size:14px !important; padding:4px 0 !important; margin:2px 0 !important; color:#F1F5F9 !important; line-height:1.3 !important; }
+.yellow-box { background:linear-gradient(135deg,#FDE68A,#FBBF24) !important; color:#000 !important; font-weight:800; border-radius:6px; padding:7px 10px !important; border:1px solid #F59E0B; font-size:14px !important; }
+.red-box { background:linear-gradient(135deg,#FECACA,#F87171) !important; color:#7F1D1D !important; font-weight:800; border-radius:6px; padding:7px 10px !important; font-size:14px !important; }
+.blue-box { background:#1E3A8A !important; border:1px solid #3B82F6 !important; border-radius:6px; padding:7px 10px !important; color:#DBEAFE !important; font-size:13px !important; }
+.tag-green { background:#065F46 !important; color:#6EE7B7 !important; border-radius:5px; padding:2px 8px !important; font-weight:700; font-size:12px !important; display:inline-block; margin:2px !important; }
+.tag-yellow { background:#92400E !important; color:#FDE68A !important; border-radius:5px; padding:2px 8px !important; font-weight:700; font-size:12px !important; display:inline-block; margin:2px !important; }
+hr.sep { border:1px dashed #334155; margin:8px 0 !important; }
+div[data-baseweb="select"] > div { min-height:36px !important; height:36px !important; padding:4px 6px !important; font-size:14px !important; }
+input[type="number"] { height:36px !important; padding:4px 8px !important; font-size:14px !important; }
+.stNumberInput, .stSelectbox, .stTextInput { margin-bottom:3px !important; }
+div.row-widget.stRadio > div { gap:8px !important; }
+/* กระชับตาราง */
+.compact-row { display:flex; gap:6px; align-items:center; }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ============================================================
-# Utilities
-# ============================================================
-
-def compress_mobile(img, max_side=1280, max_bytes=1_200_000):
-    """Compress uploaded/camera images before sending to AI."""
-    img = img.convert("RGB")
-    if max(img.size) > max_side:
-        img.thumbnail((max_side, max_side), Image.LANCZOS)
-
-    last = None
-    for quality in [75, 65, 55, 40]:
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=quality, optimize=True)
-        last = buf
-        if buf.tell() <= max_bytes:
-            buf.seek(0)
-            return Image.open(buf)
-    last.seek(0)
-    return Image.open(last)
-
-
-def clamp(value, low=0.0, high=100.0):
-    return max(low, min(high, float(value)))
-
-
-def safe_float(value, default=0.0):
-    try:
-        if value is None or (isinstance(value, float) and math.isnan(value)):
-            return default
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def pct(value):
-    return f"{value:.1f}%"
-
-
-# ============================================================
-# Motorcycle master data
-# ============================================================
-
-@st.cache_data(show_spinner=False)
-def load_master_models(file_bytes=None, file_name=""):
-    """Load motorcycle pricing once. Returns dataframe + lookup + diagnostics."""
-    debug = []
-    sources = []
-
-    if file_bytes:
-        sources.append(("uploaded", io.BytesIO(file_bytes)))
-
-    candidates = [
-        "Motorcycle-Price-All-Models.xlsx",
-        "./Motorcycle-Price-All-Models.xlsx",
-        "motorcycle_price_all_models.xlsx",
-        "/mnt/data/Motorcycle-Price-All-Models.xlsx",
-        "/mnt/data/motorcycle_price_all_models.xlsx",
-        "data/Motorcycle-Price-All-Models.xlsx",
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            sources.append((path, path))
-
-    for source_name, source in sources:
-        try:
-            xls = pd.ExcelFile(source)
-
-            for sheet in xls.sheet_names:
-                for header in [1, 0, 2]:
-                    try:
-                        df = pd.read_excel(xls, sheet_name=sheet, header=header)
-
-                        if "รุ่นรถ" not in df.columns:
-                            continue
-
-                        df["รุ่นรถ"] = df["รุ่นรถ"].ffill()
-                        if "รหัสรถ" in df.columns:
-                            df["รหัสรถ"] = df["รหัสรถ"].ffill()
-                        if "ราคาจัด" in df.columns:
-                            df["ราคาจัด"] = df["ราคาจัด"].ffill()
-
-                        interest_cols = [c for c in df.columns if "ดอกเบี้ย" in str(c)]
-                        if not interest_cols:
-                            continue
-
-                        interest_col = interest_cols[0]
-                        df[interest_col] = df[interest_col].ffill()
-
-                        if "รหัสรถ" in df.columns:
-                            df = df[pd.notna(df["รหัสรถ"])].copy()
-
-                        df = df[
-                            ~df["รุ่นรถ"].astype(str).str.contains(
-                                "รุ่นรถ|ตารางโปรโมชัน", na=False
-                            )
-                        ].copy()
-
-                        df["รุ่นรถ"] = df["รุ่นรถ"].astype(str).str.strip()
-                        df = df[~df["รุ่นรถ"].isin(["nan", "NaN", ""])].copy()
-                        df = df.drop_duplicates(subset=["รุ่นรถ"], keep="first")
-
-                        if len(df) < 5:
-                            continue
-
-                        rename_map = {
-                            "ราคาจัด": "ยอดจัด",
-                            interest_col: "ดอกเบี้ยต่อเดือน",
-                            "ดาวน์": "ราคาดาวน์",
-                            "ค่าจด/พรบ.": "ทะเบียน พรบ ประกัน",
-                            "รวมออกรถ": "ค่าใช้จ่ายออกรถ",
-                            "เงินดาวน์": "ราคาดาวน์",
-                        }
-                        df = df.rename(columns=rename_map)
-
-                        for col in [
-                            "ยอดจัด",
-                            "ดอกเบี้ยต่อเดือน",
-                            "ราคาดาวน์",
-                            "ทะเบียน พรบ ประกัน",
-                        ]:
-                            if col not in df.columns:
-                                df[col] = 0
-
-                        debug.append(
-                            f"โหลดสำเร็จ: {source_name} / {sheet} / {len(df)} รุ่น"
-                        )
-                        return df, debug
-
-                    except Exception as exc:
-                        # Keep trying other header/sheet combinations.
-                        continue
-
-        except Exception as exc:
-            debug.append(f"โหลด {source_name} ไม่สำเร็จ: {exc}")
-
-    fallback = pd.DataFrame({
-        "รุ่นรถ": [
-            "ฟาซซิโอ้ SMK",
-            "Aerox 155 2026",
-            "Wave 125 กุญแจธรรมดา /2026",
-            "GIORNO+ CBS",
-        ],
-        "รหัสรถ": ["BKF700", "BWR100", "AFS125CSBT TH", "ACF125CBT"],
-        "ยอดจัด": [49500, 85900, 63500, 85500],
-        "ดอกเบี้ยต่อเดือน": [0.015, 0.011, 0.017, 0.017],
-        "ราคาดาวน์": [0, 0, 6900, 6900],
-        "ทะเบียน พรบ ประกัน": [1000, 1000, 2000, 2000],
-    })
-    debug.append("ใช้ข้อมูลสำรอง 4 รุ่น เพราะไม่พบ Master Excel")
-    return fallback, debug
-
-
-# ============================================================
-# Deal calculations
-# ============================================================
-
-def calculate_deal(cash_price, extra_fee, down_payment, flat_rate, term, round_type):
-    net_price = cash_price + extra_fee
-    financing = max(0.0, net_price - down_payment)
-
-    total_interest = financing * (flat_rate / 100.0) * term
-    total_debt = financing + total_interest
-    monthly_raw = total_debt / term if term > 0 else 0.0
-
-    if round_type == "ปัดขึ้น":
-        monthly = math.ceil(monthly_raw)
-    elif round_type == "ปัดลง":
-        monthly = math.floor(monthly_raw)
-    elif round_type == "ปัดขึ้น 10 บ.":
-        monthly = math.ceil(monthly_raw / 10) * 10
-    elif round_type == "ปัดลง 10 บ.":
-        monthly = math.floor(monthly_raw / 10) * 10
-    elif round_type == "ปัดขึ้น 100 บ.":
-        monthly = math.ceil(monthly_raw / 100) * 100
-    elif round_type == "ปัดลง 100 บ.":
-        monthly = math.floor(monthly_raw / 100) * 100
-    else:
-        monthly = monthly_raw
-
-    down_pct = (down_payment / net_price * 100) if net_price > 0 else 0.0
-
-    return {
-        "net_price": net_price,
-        "financing": financing,
-        "total_interest": total_interest,
-        "total_debt": total_debt,
-        "monthly_raw": monthly_raw,
-        "monthly": monthly,
-        "down_pct": down_pct,
-    }
-
-
-# ============================================================
-# Affordability engine
-# IMPORTANT: This is a decision-support model, not a regulatory
-# credit score. Thresholds should be calibrated to SRD's actual
-# portfolio performance and policy.
-# ============================================================
-
-def calculate_affordability(income, existing_debt, living_cost, new_payment):
-    income = max(0.0, income)
-    existing_debt = max(0.0, existing_debt)
-    living_cost = max(0.0, living_cost)
-    new_payment = max(0.0, new_payment)
-
-    debt_service = existing_debt + new_payment
-    dsr = (debt_service / income * 100) if income > 0 else 999.0
-
-    disposable = income - existing_debt - new_payment - living_cost
-    disposable_ratio = (disposable / income * 100) if income > 0 else -100.0
-
-    # Transparent baseline scoring.
-    # Lower DSR and positive disposable income are better.
-    if income <= 0:
-        score = 0
-    else:
-        dsr_component = clamp(100 - (dsr / 70 * 100))
-        disposable_component = clamp((disposable_ratio + 20) / 50 * 100)
-        score = round((dsr_component * 0.60) + (disposable_component * 0.40))
-
-    if dsr <= 40 and disposable > 0:
-        band = "GREEN"
-    elif dsr <= 55 and disposable >= 0:
-        band = "YELLOW"
-    elif dsr <= 70:
-        band = "ORANGE"
-    else:
-        band = "RED"
-
-    return {
-        "income": income,
-        "existing_debt": existing_debt,
-        "living_cost": living_cost,
-        "new_payment": new_payment,
-        "debt_service": debt_service,
-        "dsr": dsr,
-        "disposable": disposable,
-        "disposable_ratio": disposable_ratio,
-        "score": clamp(score),
-        "band": band,
-    }
-
-
-# ============================================================
-# Data quality engine
-# ============================================================
-
-def evaluate_data_quality(
-    name,
-    age,
-    phone,
-    job,
-    residence,
-    income,
-    documents,
-    workplace,
-):
-    checks = []
-    score = 100
-
-    def check(label, ok, penalty):
-        nonlocal score
-        checks.append((label, bool(ok)))
-        if not ok:
-            score -= penalty
-
-    check("ชื่อผู้กู้", bool(name.strip()), 10)
-    check("อายุ", age >= 18, 10)
-    check("เบอร์โทร", len(re.sub(r"\D", "", phone)) >= 9, 10)
-    check("อาชีพ", bool(job.strip()), 10)
-    check("ที่พัก", residence not in ("", "[ว่าง]"), 10)
-    check("รายได้", income > 0, 20)
-    check("เอกสารอย่างน้อย 1 รายการ", len(documents) > 0, 15)
-    check("สถานที่ทำงาน/พิกัด", bool(workplace.strip()), 15)
-
-    score = clamp(score)
-
-    if score >= 85:
-        band = "GREEN"
-    elif score >= 65:
-        band = "YELLOW"
-    elif score >= 45:
-        band = "ORANGE"
-    else:
-        band = "RED"
-
-    missing = [label for label, ok in checks if not ok]
-
-    return {
-        "score": score,
-        "band": band,
-        "missing": missing,
-        "checks": checks,
-    }
-
-
-# ============================================================
-# Fraud / anomaly engine
-# Rule-based first; evidence must be shown.
-# Do not treat a single proxy signal as proof of fraud.
-# ============================================================
-
-HIGH_RISK_VEHICLES = {
-    "Yamaha - Sport", "Honda - รถใหม่", "SPORT",
-    "YAMAHA", "R15", "WR155R", "Aerox", "XMAX",
-    "NMAX", "Wave", "GIORNO", "BigBike"
-}
-
-UNSTABLE_EMPLOYMENT = {
-    "ฟรีแลนซ์/รับจ้างทั่วไป",
-    "ว่างงาน/ไม่มีงานประจำ",
-}
-
-def evaluate_fraud_rules(
-    vehicle_type,
-    down_pct,
-    employment_type,
-    shared_contracts,
-    dsr,
-    gps_consent,
-    document_count,
-    income,
-    workplace,
-):
-    score = 0
-    flags = []
-
-    def add(points, severity, code, message, evidence):
-        nonlocal score
-        score += points
-        flags.append({
-            "severity": severity,
-            "code": code,
-            "message": message,
-            "evidence": evidence,
-            "points": points,
-        })
-
-    # These are indicators, not conclusions.
-    if (
-        vehicle_type in HIGH_RISK_VEHICLES
-        and down_pct <= 5
-        and employment_type in UNSTABLE_EMPLOYMENT
-    ):
-        add(
-            25, "HIGH", "R_MATCH_RISK_01",
-            "รูปแบบดีลมีความเสี่ยงสูงกว่าปกติ",
-            "รถกลุ่มที่กำหนด + ดาวน์ <=5% + อาชีพไม่มั่นคง",
-        )
-
-    if shared_contracts >= 1:
-        add(
-            min(30, 10 * shared_contracts),
-            "HIGH" if shared_contracts >= 2 else "MEDIUM",
-            "R_LINKAGE_02",
-            "พบจำนวนสัญญาที่เชื่อมโยงซึ่งควรตรวจสอบเพิ่มเติม",
-            f"สัญญาที่เชื่อมโยงใน 90 วัน = {shared_contracts}",
-        )
-
-    if dsr > 70 and not gps_consent:
-        add(
-            20, "HIGH", "R_HIGH_DSR_NO_TRACKING",
-            "ภาระหนี้สูงและไม่มีการยินยอมติดตามตำแหน่ง",
-            f"DSR = {dsr:.1f}%",
-        )
-    elif down_pct < 5 and not gps_consent:
-        add(
-            10, "MEDIUM", "R_LOW_DOWN_NO_GPS",
-            "ดาวน์ต่ำและไม่มีการยินยอมติดตามตำแหน่ง",
-            f"ดาวน์ = {down_pct:.1f}%",
-        )
-
-    if income <= 0:
-        add(
-            25, "HIGH", "R_NO_INCOME",
-            "ยังไม่พบรายได้ที่ใช้ประเมิน",
-            "รายได้ = 0",
-        )
-
-    if document_count == 0:
-        add(
-            15, "MEDIUM", "R_NO_DOCUMENT",
-            "ยังไม่มีเอกสารประกอบ",
-            "จำนวนเอกสาร = 0",
-        )
-
-    if not workplace.strip():
-        add(
-            10, "MEDIUM", "R_NO_WORKPLACE",
-            "ยังไม่มีข้อมูลสถานที่ทำงาน/พิกัด",
-            "ช่องข้อมูลว่าง",
-        )
-
-    # Cap score so it remains a comparable 0-100 indicator.
-    score = int(clamp(score))
-
-    # Critical flags should not automatically become an irreversible
-    # rejection. They trigger policy-defined review/halt.
-    critical = any(f["severity"] == "CRITICAL" for f in flags)
-
-    if critical:
-        verdict = "HOLD / POLICY REVIEW"
-    elif score >= 60:
-        verdict = "MANUAL REVIEW"
-    elif score >= 30:
-        verdict = "ENHANCED REVIEW"
-    else:
-        verdict = "LOW FRAUD SIGNAL"
-
+def evaluate_fraud_rules(vehicle_type, down_pct, employment_type, shared, dsr, gps):
+    score=0; flags=[]
+    high=["Yamaha - Sport","Honda - รถใหม่","SPORT","YAMAHA","R15","WR155R","Aerox","XMAX","NMAX","Wave","GIORNO"]
+    unstable=["ฟรีแลนซ์/รับจ้างทั่วไป","ว่างงาน/ไม่มีงานประจำ","FREELANCE","GENERAL_LABOR","UNEMPLOYED"]
+    if (any(x.upper() in vehicle_type.upper() for x in high) or "Sport" in vehicle_type) and down_pct <=5.0 and employment_type in unstable:
+        score+=40; flags.append("⚠️ R_MATCH_RISK_01: เสี่ยงดาวน์แลกเงิน")
+    if shared>=1:
+        score+=50; flags.append("🚨 R_LINKAGE_02: เครือข่ายนายหน้า/จัดซ้อน")
+    if dsr>70.0 and not gps:
+        score+=20; flags.append("⚠️ R_HIGH_DSR_NO_TRACKING: DSR>70% ไม่มี GPS")
+    elif down_pct<5.0 and not gps:
+        score+=10; flags.append("💡 R_LOW_DOWN_NO_GPS: ดาวน์<5% ไม่มี GPS")
+    if score>=80: verdict="⛔ AUTO REJECT"
+    elif score>=50: verdict="🟠 MANUAL REVIEW"
+    else: verdict="🟢 AUTO PASS"
     return score, flags, verdict
 
+@st.cache_data
+def load_master_models_robust(file_obj=None):
+    df_final=None; yamaha_map={}; debug=[]
+    search_files=[]
+    if file_obj is not None:
+        search_files.append(("uploaded", file_obj))
+    possible_paths=[
+        "Motorcycle-Price-All-Models.xlsx","./Motorcycle-Price-All-Models.xlsx",
+        "motorcycle_price_all_models.xlsx","/mnt/data/Motorcycle-Price-All-Models.xlsx",
+        "/mnt/data/motorcycle_price_all_models.xlsx","/mount/src/srd-credit-engine/Motorcycle-Price-All-Models.xlsx",
+        "data/Motorcycle-Price-All-Models.xlsx"
+    ]
+    for p in possible_paths:
+        if os.path.exists(p):
+            search_files.append((p,p))
+    for src_name, src in search_files:
+        try:
+            xls = pd.ExcelFile(src) if isinstance(src,str) else pd.ExcelFile(src)
+            for sheet in xls.sheet_names:
+                for hdr in [1,0,2]:
+                    try:
+                        df = pd.read_excel(xls, sheet_name=sheet, header=hdr)
+                        if 'รุ่นรถ' not in df.columns: continue
+                        df['รุ่นรถ']=df['รุ่นรถ'].ffill()
+                        if 'รหัสรถ' in df.columns: df['รหัสรถ']=df['รหัสรถ'].ffill()
+                        if 'ราคาจัด' in df.columns: df['ราคาจัด']=df['ราคาจัด'].ffill()
+                        interest_col=[c for c in df.columns if 'ดอกเบี้ย' in str(c)]
+                        if not interest_col: continue
+                        interest_col=interest_col[0]
+                        df[interest_col]=df[interest_col].ffill()
+                        df_base = df[pd.notna(df['รหัสรถ'])].copy() if 'รหัสรถ' in df.columns else df.copy()
+                        df_base=df_base[~df_base['รุ่นรถ'].astype(str).str.contains('รุ่นรถ|ตารางโปรโมชัน', na=False)]
+                        df_base['รุ่นรถ']=df_base['รุ่นรถ'].astype(str).str.strip()
+                        df_base=df_base[~df_base['รุ่นรถ'].isin(['nan','NaN',''])]
+                        df_base=df_base.drop_duplicates(subset=['รุ่นรถ'], keep='first')
+                        if len(df_base)<5: continue
+                        rename_map={'ราคาจัด':'ยอดจัด', interest_col:'ดอกเบี้ยต่อเดือน', 'ดาวน์':'ราคาดาวน์', 'ค่าจด/พรบ.':'ทะเบียน พรบ ประกัน', 'รวมออกรถ':'ค่าใช้จ่ายออกรถ', 'เงินดาวน์':'ราคาดาวน์'}
+                        df_base=df_base.rename(columns=rename_map)
+                        for col in ['ยอดจัด','ดอกเบี้ยต่อเดือน','ราคาดาวน์','ทะเบียน พรบ ประกัน']:
+                            if col not in df_base.columns: df_base[col]=0
+                        for _, r in df_base.iterrows():
+                            try: yamaha_map[str(r['รุ่นรถ'])]=float(r['ดอกเบี้ยต่อเดือน'])
+                            except: yamaha_map[str(r['รุ่นรถ'])]=0.015
+                        df_final=df_base
+                        debug.append(f"✅ โหลดสำเร็จจาก {src_name} Sheet {sheet} header={hdr}: {len(df_final)} รุ่น")
+                        break
+                    except: continue
+                if df_final is not None: break
+        except Exception as e:
+            debug.append(f"❌ {src_name} Error: {e}")
+            continue
+        if df_final is not None: break
+    if df_final is None:
+        df_final=pd.DataFrame({"รุ่นรถ":["ฟาซซิโอ้ SMK","Aerox 155   2026","Wave 125 กุญแจธรรมดา /2026  1 คัน ดำ","GIORNO+ CBS  2 คัน ขาว-ดำ    เทา-น้ำตาล"],"รหัสรถ":["BKF700","BWR100","AFS125CSBT TH","ACF125CBT"],"ยอดจัด":[49500,85900,63500,85500],"ดอกเบี้ยต่อเดือน":[0.015,0.011,0.017,0.017],"ราคาดาวน์":[0,0,6900,6900],"ทะเบียน พรบ ประกัน":[1000,1000,2000,2000]})
+        debug.append("⚠️ hardcode 4 รุ่น")
+    return df_final, yamaha_map, debug
 
-# ============================================================
-# Decision engine
-# ============================================================
+HISTORY_FILE="srd_credit_assessment_history.csv"
+def save_record(rec):
+    df=pd.DataFrame([rec])
+    if not os.path.exists(HISTORY_FILE): df.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
+    else: df.to_csv(HISTORY_FILE, mode='a', header=False, index=False, encoding='utf-8-sig')
 
-def decision_engine(affordability, fraud, data_quality):
-    reasons = []
-    actions = []
-
-    # Hard safety/data gates.
-    if data_quality["score"] < 45:
-        reasons.append("ข้อมูลสำคัญยังไม่เพียงพอ")
-        actions.extend(data_quality["missing"][:4])
-
-    if affordability["income"] <= 0:
-        reasons.append("ยังไม่พบรายได้ที่ใช้คำนวณความสามารถชำระ")
-        actions.append("ตรวจสอบรายได้")
-
-    if affordability["dsr"] > 70:
-        reasons.append(f"DSR สูง {affordability['dsr']:.1f}%")
-        actions.append("ทบทวนโครงสร้างดีล/ภาระหนี้")
-
-    if affordability["disposable"] < 0:
-        reasons.append("กระแสเงินสดหลังหักภาระและค่าใช้ชีวิตติดลบ")
-        actions.append("ตรวจสอบค่าใช้ชีวิตและภาระหนี้")
-
-    high_flags = [f for f in fraud["flags"] if f["severity"] == "HIGH"]
-    if high_flags:
-        reasons.append(f"พบ Fraud/Anomaly Signal ระดับสูง {len(high_flags)} รายการ")
-        actions.append("ตรวจสอบหลักฐานของ Red Flag")
-
-    if fraud["score"] >= 60:
-        decision = "MANUAL REVIEW"
-        band = "ORANGE"
-    elif affordability["dsr"] > 70 or affordability["disposable"] < 0:
-        decision = "MANUAL REVIEW"
-        band = "ORANGE"
-    elif data_quality["score"] < 65:
-        decision = "MANUAL REVIEW"
-        band = "YELLOW"
-    elif fraud["score"] >= 30 or affordability["band"] in ("YELLOW", "ORANGE"):
-        decision = "MANUAL REVIEW"
-        band = "YELLOW"
-    else:
-        decision = "PRELIMINARY PASS"
-        band = "GREEN"
-
-    if not reasons:
-        reasons.append("ไม่พบเหตุผลหลักที่บังคับให้เข้าสู่ Manual Review")
-
-    # De-duplicate actions while preserving order.
-    actions = list(dict.fromkeys(actions))
-
-    return {
-        "decision": decision,
-        "band": band,
-        "reasons": reasons[:5],
-        "actions": actions[:6],
-    }
-
-
-# ============================================================
-# History / audit
-# ============================================================
-
-def save_record(record):
-    df = pd.DataFrame([record])
-    path = Path(HISTORY_FILE)
-
-    try:
-        if not path.exists():
-            df.to_csv(path, index=False, encoding="utf-8-sig")
-        else:
-            df.to_csv(
-                path,
-                mode="a",
-                header=False,
-                index=False,
-                encoding="utf-8-sig",
-            )
-        return True, ""
-    except Exception as exc:
-        return False, str(exc)
-
-
-# ============================================================
-# Session defaults
-# ============================================================
-
-defaults = {
-    "case_id": str(uuid.uuid4())[:8].upper(),
-    "api_key": "",
-    "model_sel": "gemini-2.0-flash",
-    "decision_saved": False,
-}
-for key, value in defaults.items():
-    st.session_state.setdefault(key, value)
-
-
-# ============================================================
-# Sidebar
-# ============================================================
-
+# SIDEBAR - คงเดิม
 with st.sidebar:
-    st.markdown("## 🏍️ SRD Credit Engine")
-    st.caption(f"Version {APP_VERSION}")
-
-    api_key = st.text_input(
-        "Gemini API Key",
-        value=st.session_state["api_key"],
-        type="password",
-    )
-    st.session_state["api_key"] = api_key
-
-    uploaded_excel = st.file_uploader(
-        "Motorcycle-Price-All-Models.xlsx",
-        type=["xlsx", "xls"],
-    )
-
-    file_bytes = uploaded_excel.getvalue() if uploaded_excel else None
-    df_master, debug_list = load_master_models(
-        file_bytes=file_bytes,
-        file_name=uploaded_excel.name if uploaded_excel else "",
-    )
-
-    st.caption(f"รุ่นรถใน Master: {len(df_master)} รุ่น")
-
-    if st.button("🔄 เริ่ม Case ใหม่", use_container_width=True):
-        st.session_state.clear()
-        st.rerun()
-
-    st.divider()
-    st.markdown("### Decision Policy")
-    st.caption(
-        "ระบบนี้เป็น Decision Support เท่านั้น "
-        "ควรใช้ร่วมกับนโยบายบริษัทและการตรวจสอบโดยเจ้าหน้าที่"
-    )
-
-
-# ============================================================
-# Header
-# ============================================================
-
-st.markdown("""
-<div class="srd-card">
-    <div class="srd-title">🏍️ SRD Credit Engine V3</div>
-    <div class="srd-subtitle">
-        Risk Decision Intelligence — Credit + Affordability + Fraud Signal
-        + Data Confidence + Explainable Decision
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-tabs = st.tabs([
-    "① DEAL",
-    "② CUSTOMER",
-    "③ EVIDENCE",
-    "④ RISK",
-    "⑤ DECISION",
-])
-
-
-# ============================================================
-# TAB 1 — DEAL
-# ============================================================
-
-with tabs[0]:
-    st.markdown("### ① Deal & Payment Structure")
-
-    model_list = ["[ว่าง] เลือกรุ่นรถ"] + df_master["รุ่นรถ"].astype(str).tolist()
-    brand_model = st.selectbox("ชื่อรุ่นรถ / Model", model_list)
-
-    selected = None
-    if brand_model != "[ว่าง] เลือกรุ่นรถ":
-        selected = df_master[df_master["รุ่นรถ"].astype(str) == brand_model].iloc[0]
-
-    default_cash = safe_float(selected["ยอดจัด"]) if selected is not None else 49500
-    default_reg = safe_float(selected["ทะเบียน พรบ ประกัน"]) if selected is not None else 0
-    default_down = safe_float(selected["ราคาดาวน์"]) if selected is not None else 8900
-    default_flat = (
-        safe_float(selected["ดอกเบี้ยต่อเดือน"]) * 100
-        if selected is not None else 1.5
-    )
-    code_auto = str(selected["รหัสรถ"]) if selected is not None else ""
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        cash_price = st.number_input(
-            "ราคาสดตัวรถ",
-            min_value=0.0,
-            value=default_cash,
-            step=100.0,
-        )
-        extra_fee = st.number_input(
-            "ค่าดำเนินการ / ชุดแต่ง / อื่น ๆ",
-            min_value=0.0,
-            value=default_reg,
-            step=100.0,
-        )
-        down_payment = st.number_input(
-            "เงินดาวน์",
-            min_value=0.0,
-            value=default_down,
-            step=100.0,
-        )
-
-    with c2:
-        flat_rate = st.number_input(
-            "Flat Rate ต่อเดือน (%)",
-            min_value=0.0,
-            value=default_flat,
-            step=0.05,
-            format="%.3f",
-        )
-
-        term_options = [12, 18, 24, 30, 36, 48, 55, 62]
-        term_choice = st.selectbox("จำนวนงวด", term_options, index=4)
-
-        custom_term = st.checkbox("กำหนดจำนวนงวดเอง 6–84")
-        if custom_term:
-            term = st.number_input(
-                "Term",
-                min_value=6,
-                max_value=84,
-                value=36,
-                step=1,
-            )
-        else:
-            term = term_choice
-
-        round_type = st.selectbox(
-            "วิธีปัดค่างวด",
-            [
-                "ไม่ปัดเศษ",
-                "ปัดขึ้น",
-                "ปัดลง",
-                "ปัดขึ้น 10 บ.",
-                "ปัดลง 10 บ.",
-                "ปัดขึ้น 100 บ.",
-                "ปัดลง 100 บ.",
-            ],
-        )
-
-    deal = calculate_deal(
-        cash_price,
-        extra_fee,
-        down_payment,
-        flat_rate,
-        term,
-        round_type,
-    )
-
-    st.markdown("---")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Net Price", f"{deal['net_price']:,.0f}")
-    m2.metric("ยอดจัด", f"{deal['financing']:,.0f}")
-    m3.metric("ค่างวด", f"{deal['monthly']:,.0f}")
-    m4.metric("ดาวน์", f"{deal['down_pct']:.1f}%")
-
-    st.info(
-        f"รหัสรถ: {code_auto or '-'} | "
-        f"ดอกเบี้ยรวม {deal['total_interest']:,.0f} บาท | "
-        f"ยอดหนี้รวม {deal['total_debt']:,.0f} บาท"
-    )
-
-
-# ============================================================
-# TAB 2 — CUSTOMER
-# ============================================================
-
-with tabs[1]:
-    st.markdown("### ② Customer & Affordability")
-
-    c1, c2, c3 = st.columns([0.4, 0.4, 0.2])
-    with c1:
-        first_name = st.text_input("ชื่อ")
-    with c2:
-        last_name = st.text_input("สกุล")
-    with c3:
-        age = st.number_input("อายุ", min_value=0, max_value=100, value=0)
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        job = st.text_input("อาชีพ")
-    with c2:
-        phone = st.text_input("เบอร์โทร")
-    with c3:
-        employment_type = st.selectbox(
-            "ประเภทอาชีพ",
-            [
-                "พนักงานประจำ",
-                "เจ้าของกิจการ",
-                "ฟรีแลนซ์/รับจ้างทั่วไป",
-                "ว่างงาน/ไม่มีงานประจำ",
-            ],
-        )
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        residence = st.selectbox(
-            "ที่พัก",
-            [
-                "[ว่าง]",
-                "บ้านตนเอง/ปลอดภาระ",
-                "บ้านตนเอง/ติดผ่อน",
-                "บ้านเช่า/หอพัก",
-                "บ้านญาติ",
-            ],
-        )
-    with c2:
-        salary = st.number_input("เงินเดือน", min_value=0.0, step=500.0)
-    with c3:
-        extra_income = st.number_input("รายได้เสริม", min_value=0.0, step=500.0)
-    with c4:
-        existing_debt = st.number_input("หนี้เดิม/เดือน", min_value=0.0, step=100.0)
-
-    living_cost = st.number_input(
-        "ค่าใช้ชีวิต/เดือน",
-        min_value=0.0,
-        step=500.0,
-    )
-
-    total_income = salary + extra_income
-
-    affordability = calculate_affordability(
-        total_income,
-        existing_debt,
-        living_cost,
-        deal["monthly"],
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("รายได้รวม", f"{total_income:,.0f}")
-    c2.metric("หนี้ + ค่างวด", f"{affordability['debt_service']:,.0f}")
-    c3.metric("DSR", pct(affordability["dsr"]))
-    c4.metric("เงินเหลือหลังค่าใช้ชีวิต", f"{affordability['disposable']:,.0f}")
-
-    if affordability["band"] == "GREEN":
-        st.success("🟢 Affordability: ดี")
-    elif affordability["band"] == "YELLOW":
-        st.warning("🟡 Affordability: ต้องพิจารณา")
-    elif affordability["band"] == "ORANGE":
-        st.warning("🟠 Affordability: ความเสี่ยงสูงขึ้น")
-    else:
-        st.error("🔴 Affordability: ต้องตรวจสอบอย่างละเอียด")
-
-    st.caption(
-        f"Disposable Ratio = {affordability['disposable_ratio']:.1f}% | "
-        f"Affordability Score = {affordability['score']:.0f}/100"
-    )
-
-
-# ============================================================
-# TAB 3 — EVIDENCE
-# ============================================================
-
-with tabs[2]:
-    st.markdown("### ③ Evidence & Data Quality")
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.markdown("**เอกสาร**")
-        doc1 = st.checkbox("สำเนาบัตรประชาชน")
-        doc2 = st.checkbox("ทะเบียนบ้าน")
-        doc3 = st.checkbox("สลิปเงินเดือน 3 เดือน")
-        doc4 = st.checkbox("สเตทเมนท์ 6 เดือน")
-        doc5 = st.checkbox("ใบจดทะเบียนการค้า")
-        doc6 = st.checkbox("รูปที่พัก / หมุด Google Maps")
-
-    with c2:
-        st.markdown("**ข้อมูลตรวจสอบ**")
-        workplace = st.text_input("สถานที่ทำงาน / Google Maps")
-        story = st.text_area("บริบทหน้าร้าน / หมายเหตุ")
-        gps_consent = st.checkbox(
-            "ยินยอมให้ติดตามตำแหน่งตามนโยบายบริษัท",
-            value=True,
-        )
-        shared_contracts = st.number_input(
-            "จำนวนสัญญาที่เชื่อมโยงใน 90 วัน",
-            min_value=0,
-            value=0,
-        )
-
-    documents = [
-        x for x, ok in [
-            ("บัตรประชาชน", doc1),
-            ("ทะเบียนบ้าน", doc2),
-            ("สลิปเงินเดือน 3 เดือน", doc3),
-            ("สเตทเมนท์ 6 เดือน", doc4),
-            ("ใบจดทะเบียนการค้า", doc5),
-            ("รูปที่พัก / หมุด Google Maps", doc6),
-        ] if ok
+    st.markdown("### 🏍️ SRD Hybrid v3.0 Fix Model")
+    api_key=st.text_input("GEMINI API Key", value=st.secrets.get("GEMINI_API_KEY","") if hasattr(st,'secrets') else "", type="password", help="ใช้ GEMINI API Key จาก https://aistudio.google.com/app/apikey")
+    model_sel=None; usable=[]
+    # รายการโมเดลที่ยังใช้งานได้ 2026 (แก้ไข Error 404 gemini-2.5-flash is no longer available)
+    FALLBACK_MODELS = [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-latest",
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash-lite",
     ]
+    if api_key and len(api_key)>10:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key.strip())
+            try:
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        name = m.name.replace("models/","")
+                        # ข้ามโมเดลที่ Google ประกาศเลิกใช้
+                        if "2.5-flash" in name and "lite" not in name:
+                            continue
+                        if name not in usable:
+                            usable.append(name)
+            except Exception as e:
+                st.warning(f"list_models error: {e} - ใช้ fallback list")
+            # รวม fallback ที่ยังใช้ได้
+            for fb in FALLBACK_MODELS:
+                if fb not in usable:
+                    usable.append(fb)
+            # เรียงให้ 2.0-flash และ 1.5-flash อยู่บน
+            usable = sorted(usable, key=lambda x: (0 if "2.0-flash" in x else 1 if "1.5-flash" in x else 2))
+            if usable:
+                # default เลือก gemini-2.0-flash หรือ 1.5-flash
+                default_idx = 0
+                for i, name in enumerate(usable):
+                    if "2.0-flash" == name:
+                        default_idx = i
+                        break
+                model_sel=st.selectbox("🤖 โมเดล AI (แก้ 404: 2.5-flash → 2.0-flash/1.5-flash)", usable, index=default_idx)
+                st.success(f"✅ {model_sel} พร้อมใช้งาน")
+            else:
+                model_sel = "gemini-2.0-flash"
+                st.warning(f"⚠️ ใช้ fallback {model_sel}")
+        except Exception as e: 
+            st.error(f"API Key Error: {e}")
+            # fallback ยังให้ใช้งานได้
+            usable = FALLBACK_MODELS
+            model_sel = st.selectbox("🤖 โมเดล AI (fallback)", usable, index=0)
+    st.markdown("---")
+    uploaded_excel=st.file_uploader("อัปโหลด Motorcycle-Price-All-Models.xlsx", type=["xlsx","xls"], key="upload_excel_master_v29")
+    df_master, yamaha_map, debug_list=load_master_models_robust(file_obj=uploaded_excel)
+    for d in debug_list:
+        if "✅" in d: st.success(d)
+    st.caption(f"รุ่นรถครบ {len(df_master)} รุ่น")
+    if st.button("🔄 รีเซ็ตฟอร์มว่าง", use_container_width=True):
+        st.session_state.clear(); st.rerun()
+    st.markdown("---")
+    uploaded_excel=st.file_uploader("อัปโหลด Motorcycle-Price-All-Models.xlsx", type=["xlsx","xls"], key="upload_excel_master_v29")
+    df_master, yamaha_map, debug_list=load_master_models_robust(file_obj=uploaded_excel)
+    for d in debug_list:
+        if "✅" in d: st.success(d)
+    st.caption(f"รุ่นรถครบ {len(df_master)} รุ่น")
+    if st.button("🔄 รีเซ็ตฟอร์มว่าง", use_container_width=True):
+        st.session_state.clear(); st.rerun()
 
-    uploaded = st.file_uploader(
-        "Upload เอกสาร / รูปภาพ",
-        type=["png", "jpg", "jpeg", "heic", "heif", "webp"],
-        accept_multiple_files=True,
-    )
-    camera = st.camera_input("📷 ถ่ายภาพ")
+st.markdown("""<div class="moto-card" style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px !important;"><div><div style="font-size:22px;font-weight:800;color:#FFF;">🏍️ SRD Credit Engine Hybrid v2.9</div><div style="font-size:12px;color:#38BDF8;">ตัวหนังสือพอดี 14px | ตารางกระชับ 2 คอลัมน์ 7+7 | ราคาสดดึงจาก Motorcycle-Price-All-Models.xlsx ตามรุ่น | ปัดเศษค่างวดขึ้นลงได้ | ค่าดำเนินการ ชุดแต่ง อื่นๆ | คู่สมรส 3 ตัวเลือก | 13 โมดูล + Fraud Engine</div></div><div><span style="background:#065F46;color:#6EE7B7;border-radius:20px;padding:5px 10px;font-size:11px;">● ONLINE</span> <span style="background:#1E3A8A;color:#93C5FD;border-radius:20px;padding:5px 10px;font-size:11px;">v2.9</span></div></div>""", unsafe_allow_html=True)
 
-    bad_extensions = (".dng", ".raw", ".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf")
-    if uploaded:
-        bad = [f.name for f in uploaded if f.name.lower().endswith(bad_extensions)]
-        if bad:
-            st.error(f"ไม่รองรับไฟล์ RAW/DNG: {', '.join(bad)}")
+# FALLBACK API
+if 'api_key' not in locals() or not api_key:
+    with st.expander("🔑 กรอก GEMINI API Key (กรณีไม่เห็นเมนู Sidebar - กด ☰ มุมซ้ายบน)", expanded=False):
+        api_key_main = st.text_input("GEMINI API Key (สำรอง)", value="", type="password", key="api_main_v29")
+        if api_key_main:
+            api_key = api_key_main
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=api_key.strip())
+                if 'model_sel' not in locals() or not model_sel:
+                    for m in genai.list_models():
+                        if 'generateContent' in m.supported_generation_methods:
+                            model_sel = m.name.replace("models/","")
+                            break
+                st.success(f"✅ API พร้อม - {model_sel if 'model_sel' in locals() else ''}")
+            except Exception as e:
+                st.error(f"API Error: {e}")
 
-    data_quality = evaluate_data_quality(
-        name=f"{first_name} {last_name}".strip(),
-        age=age,
-        phone=phone,
-        job=job,
-        residence=residence,
-        income=total_income,
-        documents=documents,
-        workplace=workplace,
-    )
+price_df, _, debug_list = load_master_models_robust(file_obj=uploaded_excel if 'uploaded_excel' in locals() else None)
+model_list=price_df["รุ่นรถ"].astype(str).tolist()
+price_dict={row["รุ่นรถ"]: row for _, row in price_df.iterrows()}
 
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        st.metric("Data Confidence", f"{data_quality['score']:.0f}/100")
-    with c2:
-        if data_quality["missing"]:
-            st.warning("ข้อมูลที่ยังขาด: " + ", ".join(data_quality["missing"]))
-        else:
-            st.success("ข้อมูลพื้นฐานครบตาม checklist")
+for d in debug_list:
+    if "✅" in d: st.success(d)
 
+# ===== 1. ตารางราคา - 2 คอลัมน์ 7+7 - กระชับ + ดึงราคาตามรุ่น =====
+st.markdown('<div class="moto-card">', unsafe_allow_html=True)
+st.subheader("1. ตารางราคา (ตารางคำนวณ)")
 
-# ============================================================
-# TAB 4 — RISK
-# ============================================================
+# FIX ราคาสดตัวรถ ไม่ดึงจาก Motorcycle-Price-All-Models - ใช้ session_state force update
+if 'last_brand' not in st.session_state:
+    st.session_state.last_brand = ""
 
-with tabs[3]:
-    st.markdown("### ④ Risk Intelligence")
+col_left, col_right = st.columns(2, gap="small")
 
-    vehicle_types = [
-        "Auto", "Yamaha - Sport", "YAMAHA", "Honda - รถใหม่",
-        "Moped", "Sport", "BigBike", "Electric", "Wave", "GIORNO",
-    ]
-    vehicle_type = st.selectbox("ประเภทรถสำหรับ Risk Rule", vehicle_types)
+with col_left:
+    st.markdown("**คอลัมน์ที่ 1 - ข้อมูลรถและเงินดาวน์**")
+    st.markdown('<div class="label-col">1. ชื่อรุ่นรถ / Model:</div>', unsafe_allow_html=True)
+    brand_model=st.selectbox("ชื่อรุ่นรถ / Model", options=["[ว่าง] เลือกรุ่นรถ"]+model_list, index=0, key="model_v29", label_visibility="collapsed")
+    selected_row=price_dict.get(brand_model) if brand_model in price_dict else None
 
-    fraud_score, fraud_flags, fraud_verdict = evaluate_fraud_rules(
-        vehicle_type=vehicle_type,
-        down_pct=deal["down_pct"],
-        employment_type=employment_type,
-        shared_contracts=shared_contracts,
-        dsr=affordability["dsr"],
-        gps_consent=gps_consent,
-        document_count=len(documents),
-        income=total_income,
-        workplace=workplace,
-    )
+    # FIX: เมื่อเลือกรุ่น ให้ดึงราคาตามตารางขึ้น auto ทันที
+    if selected_row is not None and brand_model != st.session_state.last_brand:
+        st.session_state.cash_v29 = float(selected_row["ยอดจัด"]) if pd.notna(selected_row["ยอดจัด"]) else 0.0
+        st.session_state.reg_v29 = float(selected_row["ทะเบียน พรบ ประกัน"]) if pd.notna(selected_row["ทะเบียน พรบ ประกัน"]) else 0.0
+        st.session_state.down_v29 = float(selected_row["ราคาดาวน์"]) if pd.notna(selected_row["ราคาดาวน์"]) else 0.0
+        st.session_state.flat_v29 = float(selected_row["ดอกเบี้ยต่อเดือน"]*100) if pd.notna(selected_row["ดอกเบี้ยต่อเดือน"]) else 1.5
+        st.session_state.code_v29 = str(selected_row["รหัสรถ"]) if pd.notna(selected_row["รหัสรถ"]) else ""
+        st.session_state.last_brand = brand_model
 
-    risk_c1, risk_c2, risk_c3, risk_c4 = st.columns(4)
-    risk_c1.metric("Credit/Affordability", f"{affordability['score']:.0f}/100")
-    risk_c2.metric("Fraud Signal", f"{fraud_score}/100")
-    risk_c3.metric("Data Confidence", f"{data_quality['score']:.0f}/100")
-    risk_c4.metric("DSR", pct(affordability["dsr"]))
+    st.markdown('<div class="label-col">รหัสรถ (Copy ได้):</div>', unsafe_allow_html=True)
+    code_auto=st.session_state.get('code_v29', str(selected_row["รหัสรถ"]) if selected_row is not None and pd.notna(selected_row["รหัสรถ"]) else "")
+    if code_auto:
+        st.code(code_auto, language="text")
 
-    st.markdown("#### 🚨 Red Flags / Evidence")
+    st.markdown('<div class="label-col">2. ราคาสดตัวรถ (Cash Price) - ดึงจากไฟล์ตามรุ่น:</div>', unsafe_allow_html=True)
+    cash_default=st.session_state.get('cash_v29', float(selected_row["ยอดจัด"]) if selected_row is not None and pd.notna(selected_row["ยอดจัด"]) else 49500.0)
+    cash_price=st.number_input("ราคาสดตัวรถ", value=cash_default, step=100.0, key="cash_v29", label_visibility="collapsed", help="ดึงจาก ราคาจัด ใน Motorcycle-Price-All-Models.xlsx ตามรุ่นที่เลือก - แก้ไขได้")
 
-    if fraud_flags:
-        for flag in fraud_flags:
-            severity = flag["severity"]
-            icon = {"HIGH": "🔴", "MEDIUM": "🟠", "CRITICAL": "⛔"}.get(severity, "🟡")
-            st.markdown(
-                f"""
-                <div class="reason">
-                    <b>{icon} {severity} — {flag['code']}</b><br>
-                    {flag['message']}<br>
-                    <span class="small-note">Evidence: {flag['evidence']} | +{flag['points']} points</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    st.markdown('<div class="label-col">3. ค่าดำเนินการ ชุดแต่ง อื่นๆ:</div>', unsafe_allow_html=True)
+    reg_default=st.session_state.get('reg_v29', float(selected_row["ทะเบียน พรบ ประกัน"]) if selected_row is not None and pd.notna(selected_row["ทะเบียน พรบ ประกัน"]) else 0.0)
+    reg_fee=st.number_input("ค่าดำเนินการ ชุดแต่ง อื่นๆ", value=reg_default, step=100.0, key="reg_v29", label_visibility="collapsed")
+
+    net_price=cash_price+reg_fee
+    st.markdown('<div class="label-col">4. รวมราคารถสุทธิ (Net Price)</div>', unsafe_allow_html=True)
+    st.markdown(f"<div class='yellow-box'>Net = {cash_price:,.0f} + {reg_fee:,.0f} = {net_price:,.0f}</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="label-col">5. เงินดาวน์ (Down Payment):</div>', unsafe_allow_html=True)
+    down_default=st.session_state.get('down_v29', float(selected_row["ราคาดาวน์"]) if selected_row is not None and pd.notna(selected_row["ราคาดาวน์"]) else 8900.0)
+    down_payment=st.number_input("เงินดาวน์", value=down_default, step=100.0, key="down_v29", label_visibility="collapsed")
+
+    financing=net_price-down_payment
+    st.markdown('<div class="label-col">6. ยอดจัดไฟแนนซ์ (Financing Amount)</div>', unsafe_allow_html=True)
+    st.markdown(f"<div class='yellow-box'>ยอดจัด = {net_price:,.0f} - {down_payment:,.0f} = {financing:,.0f} (auto)</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="label-col">7. อัตราดอกเบี้ยต่อเดือน (Flat Rate / Month %):</div>', unsafe_allow_html=True)
+    flat_default=st.session_state.get('flat_v29', float(selected_row["ดอกเบี้ยต่อเดือน"]*100) if selected_row is not None and pd.notna(selected_row["ดอกเบี้ยต่อเดือน"]) else 1.5)
+    flat_rate=st.number_input("Flat Rate", value=flat_default, step=0.05, format="%.3f", key="flat_v29", label_visibility="collapsed")
+
+with col_right:
+    st.markdown("**คอลัมน์ที่ 2 - เงื่อนไขผ่อนและสรุปค่าใช้จ่าย**")
+    st.markdown('<div class="label-col">8. ระยะเวลาผ่อน (จำนวนงวด / Months)</div>', unsafe_allow_html=True)
+    term_options=[12,18,24,30,36,48,55,62]
+    term_sel=st.selectbox("ระยะเวลาผ่อน", options=term_options, index=5, key="term_v29", label_visibility="collapsed")
+    custom=st.checkbox("✏️ กำหนดเอง 6-84", key="custom_term_v29")
+    term=st.number_input("Term กำหนดเอง", min_value=6, max_value=84, value=term_sel, step=1, key="term_custom_v29", label_visibility="collapsed") if custom else term_sel
+
+    total_interest=financing*(flat_rate/100)*term
+    total_debt=financing+total_interest
+    monthly_raw=total_debt/term if term>0 else 0
+
+    st.markdown('<div class="label-col">9. รวมดอกเบี้ยทั้งหมด (Total Interest)</div>', unsafe_allow_html=True)
+    st.markdown(f"<div class='blue-box'>ดอกเบี้ย = {financing:,.0f} × {flat_rate:.3f}% × {term} = {total_interest:,.0f}</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="label-col">10. ยอดหนี้รวมทั้งหมด (Total Debt)</div>', unsafe_allow_html=True)
+    st.markdown(f"<div class='yellow-box'>ยอดหนี้ = {financing:,.0f} + {total_interest:,.0f} = {total_debt:,.0f}</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="label-col">11. ค่างวดต่อเดือน (Monthly Payment) - ปัดเศษขึ้นลงได้:</div>', unsafe_allow_html=True)
+    round_type=st.selectbox("วิธีปัดเศษค่างวด", options=["ไม่ปัดเศษ","ปัดขึ้น","ปัดลง","ปัดขึ้น 10 บ.","ปัดลง 10 บ.","ปัดขึ้น 100 บ.","ปัดลง 100 บ."], index=0, key="round_type_v29", label_visibility="collapsed")
+    if round_type=="ปัดขึ้น": monthly_final=math.ceil(monthly_raw)
+    elif round_type=="ปัดลง": monthly_final=math.floor(monthly_raw)
+    elif round_type=="ปัดขึ้น 10 บ.": monthly_final=math.ceil(monthly_raw/10)*10
+    elif round_type=="ปัดลง 10 บ.": monthly_final=math.floor(monthly_raw/10)*10
+    elif round_type=="ปัดขึ้น 100 บ.": monthly_final=math.ceil(monthly_raw/100)*100
+    elif round_type=="ปัดลง 100 บ.": monthly_final=math.floor(monthly_raw/100)*100
+    else: monthly_final=monthly_raw
+
+    if round_type!="ไม่ปัดเศษ":
+        st.markdown(f"<div class='blue-box' style='background:#0F172A !important; border:1px dashed #475569 !important;'>ดิบ = {total_debt:,.0f}/{term} = {monthly_raw:,.2f}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='red-box'>ปัด {round_type} = {monthly_final:,.0f} บ.</div>", unsafe_allow_html=True)
     else:
-        st.success("🟢 ยังไม่พบ Fraud/Anomaly Signal จาก Rule ที่กำหนด")
+        st.markdown(f"<div class='red-box'>ค่างวด = {total_debt:,.0f}/{term} = {monthly_raw:,.0f} บ.</div>", unsafe_allow_html=True)
+    monthly=monthly_final
 
-    st.info(f"Fraud Engine: {fraud_verdict}")
+    st.markdown('<hr class="sep">', unsafe_allow_html=True)
+    st.markdown("**-- สรุปค่าใช้จ่ายออกรถ --**")
 
-    # What-if simulator
-    st.markdown("---")
-    st.markdown("#### 🧪 What-if Simulator")
+    st.markdown('<div class="label-col">12. ค่า พรบ./ทะเบียน/ประกันรถหาย (แก้ไขได้):</div>', unsafe_allow_html=True)
+    prb_fee=st.number_input("12. ค่า พรบ./ทะเบียน/ประกันรถหาย", value=reg_default, step=100.0, key="prb_fee_v29", label_visibility="collapsed")
 
-    whatif_down = st.number_input(
-        "ทดลองเงินดาวน์",
-        min_value=0.0,
-        value=float(deal["down_payment"] if "down_payment" in deal else down_payment),
-        step=100.0,
-        key="whatif_down",
-    )
+    st.markdown('<div class="label-col">13. เงินดาวน์ (Down Payment)</div>', unsafe_allow_html=True)
+    st.markdown(f"<div class='yellow-box' style='background:#FEF3C7 !important; color:#000 !important;'>ดาวน์ = {down_payment:,.0f}</div>", unsafe_allow_html=True)
 
-    whatif = calculate_deal(
-        cash_price,
-        extra_fee,
-        whatif_down,
-        flat_rate,
-        term,
-        round_type,
-    )
-    whatif_affordability = calculate_affordability(
-        total_income,
-        existing_debt,
-        living_cost,
-        whatif["monthly"],
-    )
+    total_drive=down_payment+prb_fee
+    st.markdown('<div class="label-col">14. ออกรถได้</div>', unsafe_allow_html=True)
+    st.markdown(f"<div class='red-box' style='text-align:center;'>ออกรถได้ = {down_payment:,.0f} + {prb_fee:,.0f} = {total_drive:,.0f} บ.</div>", unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("ค่างวดใหม่", f"{whatif['monthly']:,.0f}")
-    c2.metric("DSR ใหม่", pct(whatif_affordability["dsr"]))
-    c3.metric("เงินเหลือใหม่", f"{whatif_affordability['disposable']:,.0f}")
+down_pct=(down_payment/net_price*100) if net_price>0 else 0
+st.markdown(f"<div class='blue-box' style='margin-top:6px !important;'>💡 {brand_model} | รหัส {code_auto} | ราคาสด {cash_price:,.0f} ดึงจากไฟล์ตามรุ่น | Net {net_price:,.0f} | ยอดจัด {financing:,.0f} | Flat {flat_rate:.3f}% | ค่างวด {monthly_raw:,.2f} → {monthly:,.0f} ({round_type}) | ออกรถได้ {total_drive:,.0f}</div>", unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
-    st.caption(
-        "What-if เป็นการจำลองโครงสร้างดีลเท่านั้น ไม่ใช่การรับประกันผลอนุมัติ"
-    )
+# ===== 2-7 คงเดิม ห้ามแก้ไข =====
+st.markdown('<div class="moto-card">', unsafe_allow_html=True)
+st.subheader("2. ข้อมูลผู้เช่าซื้อ")
+c1, c2, c3 = st.columns([0.4,0.4,0.2])
+with c1: f_name=st.text_input("ชื่อ", value="", key="fname_v29")
+with c2: l_name=st.text_input("สกุล", value="", key="lname_v29")
+with c3: age=st.number_input("อายุ", min_value=0, max_value=80, value=0, key="age_v29")
+c1, c2, c3 = st.columns([0.35,0.35,0.3])
+with c1: job=st.text_input("อาชีพ", value="", key="job_v29")
+with c2: phone=st.text_input("เบอร์โทร", value="", key="phone_v29")
+with c3: emp_type=st.selectbox("ประเภทอาชีพ Rule", ["พนักงานประจำ","เจ้าของกิจการ","ฟรีแลนซ์/รับจ้างทั่วไป","ว่างงาน/ไม่มีงานประจำ"], key="emp_v29")
+c1, c2, c3, c4 = st.columns(4)
+with c1: residence=st.selectbox("ที่พัก", ["[ว่าง]","บ้านตนเอง/ปลอดภาระ","บ้านตนเอง/ติดผ่อน","บ้านเช่า/หอพัก","บ้านญาติ"], key="res_v29")
+with c2: salary=st.number_input("เงินเดือน", value=0, step=500, key="sal_v29")
+with c3: extra=st.number_input("รายได้เสริม", value=0, step=500, key="extra_v29")
+with c4: debt_monthly=st.number_input("หนี้เดิม/เดือน", value=0, step=100, key="debt_monthly_v29")
+living=st.number_input("ค่าใช้ชีวิต/เดือน", value=0, step=500, key="live_v29")
+total_inc=salary+extra
+total_bur=debt_monthly+living+monthly
+dsr=(total_bur/total_inc*100) if total_inc>0 else 0
+m1,m2,m3=st.columns(3)
+with m1: st.metric("รายได้รวม", f"{total_inc:,.0f}")
+with m2: st.metric("ภาระรวม", f"{total_bur:,.0f}")
+with m3: st.metric("DSR %", f"{dsr:.1f}%")
+st.markdown('</div>', unsafe_allow_html=True)
 
+st.markdown('<div class="moto-card">', unsafe_allow_html=True)
+st.subheader("3. บุคคลอ้างอิง")
+r1,r2=st.columns(2)
+with r1:
+    st.markdown("**อ้างอิง 1**")
+    c1,c2,c3=st.columns([0.5,0.25,0.25])
+    with c1: ref1_name=st.text_input("ชื่อ-สกุล 1", value="", key="ref1_name_v29", label_visibility="collapsed", placeholder="ชื่อ-สกุล 1")
+    with c2: ref1_phone=st.text_input("เบอร์ 1", value="", key="ref1_phone_v29", label_visibility="collapsed", placeholder="เบอร์")
+    with c3: ref1_rel=st.text_input("สัมพันธ์ 1", value="", key="ref1_rel_v29", label_visibility="collapsed", placeholder="พี่ชาย")
+with r2:
+    st.markdown("**อ้างอิง 2**")
+    c1,c2,c3=st.columns([0.5,0.25,0.25])
+    with c1: ref2_name=st.text_input("ชื่อ-สกุล 2", value="", key="ref2_name_v29", label_visibility="collapsed", placeholder="ชื่อ-สกุล 2")
+    with c2: ref2_phone=st.text_input("เบอร์ 2", value="", key="ref2_phone_v29", label_visibility="collapsed", placeholder="เบอร์")
+    with c3: ref2_rel=st.text_input("สัมพันธ์ 2", value="", key="ref2_rel_v29", label_visibility="collapsed", placeholder="เพื่อน")
+st.markdown('</div>', unsafe_allow_html=True)
 
-# ============================================================
-# TAB 5 — DECISION
-# ============================================================
+st.markdown('<div class="moto-card">', unsafe_allow_html=True)
+st.subheader("4. คู่สมรส")
+spouse_status=st.radio("สถานะการรับทราบของคู่สมรส", ["1 ไม่มีคู่สมรส","✅รับทราบเรื่องส่งค่างวด","✅รับทราบแต่ไม่ช่วยส่ง","✅ ไม่ทราบ"], horizontal=True, key="sp_status_v29")
+spouse_summary="ไม่มีคู่สมรส"; sp_ack=spouse_status
+if spouse_status!="1 ไม่มีคู่สมรส":
+    c1,c2,c3=st.columns([0.4,0.2,0.4])
+    with c1: sp_name=st.text_input("1. ชื่อ-สกุล คู่สมรส", value="", key="sp_name_v29")
+    with c2: sp_age=st.number_input("2. อายุ", value=0, key="sp_age_v29")
+    with c3: sp_job=st.text_input("6. อาชีพ", value="", key="sp_job_v29")
+    c1,c2,c3=st.columns(3)
+    with c1: sp_year=st.number_input("3. จำนวนปีที่สมรส", value=0, key="sp_year_v29")
+    with c2: sp_child=st.number_input("4. มีบุตรกี่คน", value=0, key="sp_child_v29")
+    with c3: sp_income=st.number_input("5. รายได้คู่สมรส", value=0, step=500, key="sp_inc_v29")
+    spouse_summary=f"{sp_name} อายุ {sp_age} สมรส {sp_year} ปี บุตร {sp_child} คน รายได้ {sp_income:,.0f} อาชีพ {sp_job} สถานะ {sp_ack}"
+st.markdown('</div>', unsafe_allow_html=True)
 
-with tabs[4]:
-    st.markdown("### ⑤ Decision Center")
+st.markdown('<div class="moto-card">', unsafe_allow_html=True)
+st.subheader("5. ผู้ค้ำประกัน")
+guar_choice=st.radio("สถานะผู้ค้ำประกัน", ["1 ไม่มีผู้ค้ำประกัน","2 มีผู้ค้ำประกัน"], horizontal=True, key="guar_choice_v29")
+g_text="ไม่มีผู้ค้ำประกัน"
+if guar_choice=="2 มีผู้ค้ำประกัน":
+    c1,c2,c3=st.columns([0.4,0.2,0.4])
+    with c1: g_name=st.text_input("1. ชื่อ-สกุล ผู้ค้ำ", value="", key="g_name_v29")
+    with c2: g_age=st.number_input("2. อายุ", value=0, key="g_age_v29")
+    with c3: g_phone=st.text_input("5. เบอร์โทร", value="", key="g_phone_v29")
+    c1,c2=st.columns(2)
+    with c1: g_job=st.text_input("3. อาชีพผู้ค้ำประกัน", value="", key="g_job_v29")
+    with c2: g_income=st.number_input("4. รายได้ผู้ค้ำประกัน", value=0, step=1000, key="g_inc_v29")
+    g_text=f"{g_name} อายุ {g_age} อาชีพ {g_job} รายได้ {g_income:,.0f} เบอร์ {g_phone}"
+st.markdown('</div>', unsafe_allow_html=True)
 
-    fraud_pack = {
-        "score": fraud_score,
-        "flags": fraud_flags,
-        "verdict": fraud_verdict,
-    }
+st.markdown('<div class="moto-card">', unsafe_allow_html=True)
+st.subheader("6. เช็คลิสต์เอกสาร 6 รายการ")
+d1=st.checkbox("1. สำเนาบัตรประชาชน", key="doc1_v29")
+d2=st.checkbox("2. ทะเบียนบ้าน", key="doc2_v29")
+d3=st.checkbox("3. สลิปเงินเดือน 3 เดือน", key="doc3_v29")
+d4=st.checkbox("4. สเตทเม้นท์ 6 เดือน", key="doc4_v29")
+d5=st.checkbox("5. ใบจดทะเบียนการค้า", key="doc5_v29")
+d6=st.checkbox("6. รูปถ่ายที่พัก / หมุด Google Maps", key="doc6_v29")
+attached=[]; missing=[]
+for n,c in [("บัตร ปชช",d1),("ทะเบียนบ้าน",d2),("สลิป 3 เดือน",d3),("สเตทเม้นท์ 6 เดือน",d4),("ใบจดทะเบียนการค้า",d5),("รูปที่พัก",d6)]:
+    if c: attached.append(n)
+    else: missing.append(n)
+uploaded=st.file_uploader("📸 Upload เอกสาร (JPG PNG HEIC WEBP - กัน DNG)", type=["png","jpg","jpeg","heic","heif","webp"], accept_multiple_files=True, key="upload_v29")
+if uploaded:
+    bad=[f.name for f in uploaded if f.name.lower().endswith(('.dng','.raw','.arw','.cr2','.cr3','.nef','.orf','.rw2','.raf'))]
+    if bad:
+        st.error(f"❌ พบไฟล์ RAW/DNG: {', '.join(bad)}")
+        uploaded=[f for f in uploaded if not f.name.lower().endswith(('.dng','.raw','.arw','.cr2','.cr3','.nef','.orf','.rw2','.raf'))]
+cam=st.camera_input("📷 Take Photo", key="camera_v29")
+gps_consent=st.checkbox("✅ ยินยอมให้ติดตามตำแหน่ง (PDPA Compliant)", value=True, key="gps_v29")
+workplace=st.text_input("📌 พิกัด Google Maps (PDPA/GPS)", value="", key="workplace_v29")
+story=st.text_area("🏪 บันทึกบริบทหน้าร้าน", value="", key="story_v29")
+shared_contracts=st.number_input("จำนวนสัญญาที่เชื่อมโยงใน 90 วัน (เครือข่ายนายหน้า)", min_value=0, value=0, key="shared_v29")
+st.markdown('</div>', unsafe_allow_html=True)
 
-    final_decision = decision_engine(
-        affordability=affordability,
-        fraud=fraud_pack,
-        data_quality=data_quality,
-    )
-
-    status_class = {
-        "GREEN": "status-green",
-        "YELLOW": "status-yellow",
-        "ORANGE": "status-yellow",
-        "RED": "status-red",
-    }.get(final_decision["band"], "status-blue")
-
-    st.markdown(
-        f"""
-        <div class="status {status_class}">
-            {final_decision['decision']}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### เหตุผลหลัก")
-    for i, reason in enumerate(final_decision["reasons"], 1):
-        st.markdown(f"**{i}.** {reason}")
-
-    st.markdown("#### สิ่งที่ควรตรวจ / ทำต่อ")
-    if final_decision["actions"]:
-        for action in final_decision["actions"]:
-            st.checkbox(action, key=f"action_{hash(action)}")
-    else:
-        st.success("ไม่พบ Action ที่ต้องทำเพิ่มจาก Engine ปัจจุบัน")
-
-    st.markdown("---")
-    st.markdown("#### 👤 Human Decision / Override")
-
-    human_decision = st.radio(
-        "ผลการพิจารณาของเจ้าหน้าที่",
-        [
-            "ใช้คำแนะนำระบบ",
-            "อนุมัติ",
-            "Manual Review",
-            "ไม่อนุมัติ",
-        ],
-        horizontal=True,
-    )
-
-    override_reason = st.text_area(
-        "เหตุผลของเจ้าหน้าที่ / Override",
-        placeholder="ระบุเหตุผลและหลักฐานประกอบ หากเปลี่ยนจากคำแนะนำของระบบ",
-    )
-
-    # AI is optional analyst, not the decision maker.
-    st.markdown("---")
-    st.markdown("#### 🤖 AI Analyst (Optional)")
-
-    run_ai = st.button(
-        "วิเคราะห์สรุปด้วย Gemini",
-        type="primary",
-        use_container_width=True,
-    )
-
-    if run_ai:
-        if not api_key:
-            st.error("กรุณากรอก Gemini API Key ที่ Sidebar")
+st.markdown('<div class="moto-card" style="border:2px solid #8B5CF6 !important;">', unsafe_allow_html=True)
+st.subheader("7. วิเคราะห์ 13 โมดูลด้วย Ai + Fraud Engine")
+vehicle_type=st.selectbox("ประเภทรถสำหรับ Rule Engine", ["Auto","Yamaha - Sport","YAMAHA","Honda - รถใหม่","Moped","Sport","BigBike","Electric","Wave","GIORNO"], key="veh_v29")
+r_score, r_flags, r_verdict = evaluate_fraud_rules(vehicle_type, down_pct, emp_type, shared_contracts, dsr, gps_consent)
+colA,colB,colC=st.columns(3)
+with colA: st.metric("DSR Meter", f"{dsr:.1f}%"); st.progress(min(1.0, dsr/100) if dsr>0 else 0.0)
+with colB: risk_score=int(min(100, dsr*1.2)) if dsr>0 else 0; st.metric("Risk Score", f"{risk_score}/100"); st.progress(risk_score/100)
+with colC: st.metric(f"Fraud Score - {r_verdict}", f"{r_score}"); 
+for f in r_flags: 
+    if "LOW_DOWN" in f: st.warning(f)
+    else: st.error(f)
+st.markdown(f"<div class='blue-box'>ตารางราคา: {brand_model} | รหัส {code_auto} | Net {net_price:,.0f} | ยอดจัด {financing:,.0f} | Flat {flat_rate:.3f}% | ค่างวด {monthly_raw:,.2f}→{monthly:,.0f} | ออกรถได้ {total_drive:,.0f}</div>", unsafe_allow_html=True)
+if uploaded or cam or st.checkbox("✅ ทดสอบโดยไม่ต้องอัปโหลด", key="test_no_upload_v29"):
+    if st.button("🚀 รัน SRD Credit Investigation Engine 13 Modules + Prompt AI 10 หัวข้อ", type="primary", use_container_width=True, key="run_ai_v29"):
+        if not api_key or not model_sel:
+            st.error("กรุณากรอก API Key")
         else:
             try:
                 import google.generativeai as genai
-
                 genai.configure(api_key=api_key.strip())
-                model_name = st.session_state.get("model_sel", "gemini-2.0-flash")
-
-                prompt = f"""
-คุณเป็น AI Analyst ของระบบ SRD Credit Engine
-หน้าที่คือสรุปข้อมูลและชี้จุดที่ควรตรวจสอบ
-ห้ามตัดสินอนุมัติสินเชื่อแทนเจ้าหน้าที่ และห้ามสร้างข้อมูลที่ไม่มีหลักฐาน
-
-ข้อมูล:
-- รถ: {brand_model}
-- ยอดจัด: {deal['financing']:,.0f}
-- ค่างวด: {deal['monthly']:,.0f}
-- รายได้รวม: {total_income:,.0f}
-- หนี้เดิม: {existing_debt:,.0f}
-- ค่าใช้ชีวิต: {living_cost:,.0f}
-- DSR: {affordability['dsr']:.1f}%
-- Disposable: {affordability['disposable']:,.0f}
-- Affordability Score: {affordability['score']:.0f}
-- Fraud Signal: {fraud_score}
-- Data Confidence: {data_quality['score']:.0f}
-- System Decision: {final_decision['decision']}
-- Reasons: {json.dumps(final_decision['reasons'], ensure_ascii=False)}
-- Actions: {json.dumps(final_decision['actions'], ensure_ascii=False)}
-
-กรุณาตอบ 4 หัวข้อ:
-1) สรุปภาพรวม
-2) จุดแข็ง
-3) จุดเสี่ยง/ข้อมูลที่ยังไม่พอ
-4) สิ่งที่เจ้าหน้าที่ควรตรวจต่อ
+                imgs=[]
+                if uploaded:
+                    for f in uploaded: imgs.append(_compress_mobile(Image.open(f)))
+                if cam: imgs.append(_compress_mobile(Image.open(cam)))
+                full_prompt=f"""
+# SRD Hybrid v3.0 Fix Model
+รุ่น {brand_model} รหัส {code_auto} ราคาสด {cash_price:,.0f} ดึงจากไฟล์ตามรุ่น Net {net_price:,.0f} ยอดจัด {financing:,.0f} Flat {flat_rate:.3f}% ค่างวด {monthly_raw:,.2f}→{monthly:,.0f} {round_type} ออกรถได้ {total_drive:,.0f}
+ผู้กู้ {f_name} {l_name} DSR {dsr:.1f}% {r_verdict} {r_score}
 """
-
-                model_names = [
-                    model_name,
-                    "gemini-2.0-flash",
-                    "gemini-2.0-flash-lite",
-                ]
-
-                response = None
-                used_model = None
-                last_error = None
-
-                for candidate in dict.fromkeys(model_names):
-                    try:
-                        model = genai.GenerativeModel(candidate)
-                        response = model.generate_content(prompt)
-                        used_model = candidate
-                        break
-                    except Exception as exc:
-                        last_error = exc
-
-                if response is None:
-                    raise last_error or RuntimeError("AI model unavailable")
-
-                st.success(f"AI Analyst ใช้ {used_model}")
-                st.markdown(response.text)
-
-            except Exception as exc:
-                st.error(f"AI Analyst Error: {exc}")
-
-    st.markdown("---")
-
-    # Save final audit record.
-    if st.button("💾 บันทึก Case / Audit Trail", use_container_width=True):
-        selected_human = (
-            final_decision["decision"]
-            if human_decision == "ใช้คำแนะนำระบบ"
-            else human_decision
-        )
-
-        record = {
-            "CaseID": st.session_state["case_id"],
-            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "AppVersion": APP_VERSION,
-            "Model": brand_model,
-            "Code": code_auto,
-            "Cash": cash_price,
-            "Net": deal["net_price"],
-            "Down": down_payment,
-            "DownPct": deal["down_pct"],
-            "Financing": deal["financing"],
-            "FlatRate": flat_rate,
-            "Term": term,
-            "MonthlyRaw": deal["monthly_raw"],
-            "MonthlyFinal": deal["monthly"],
-            "TotalInterest": deal["total_interest"],
-            "TotalDebt": deal["total_debt"],
-            "Income": total_income,
-            "ExistingDebt": existing_debt,
-            "LivingCost": living_cost,
-            "DSR": affordability["dsr"],
-            "Disposable": affordability["disposable"],
-            "AffordabilityScore": affordability["score"],
-            "FraudScore": fraud_score,
-            "FraudVerdict": fraud_verdict,
-            "DataConfidence": data_quality["score"],
-            "SystemDecision": final_decision["decision"],
-            "HumanDecision": selected_human,
-            "OverrideReason": override_reason,
-            "Reasons": " | ".join(final_decision["reasons"]),
-            "Actions": " | ".join(final_decision["actions"]),
-            "Documents": " | ".join(documents),
-        }
-
-        ok, error = save_record(record)
-
-        if ok:
-            st.success(
-                f"บันทึก Case {st.session_state['case_id']} สำเร็จ — "
-                f"System: {final_decision['decision']} / Human: {selected_human}"
-            )
-        else:
-            st.error(f"บันทึก Audit Trail ไม่สำเร็จ: {error}")
-
-
-# ============================================================
-# Footer
-# ============================================================
-
-st.caption(
-    f"SRD Credit Engine {APP_VERSION} | "
-    "Decision-support only | ตรวจสอบผลกับนโยบายบริษัทก่อนใช้งานจริง"
-)
+                with st.spinner(f"AI ({model_sel}) วิเคราะห์ 13 โมดูล..."):
+                    # FIX 404 This model models/gemini-2.5-flash is no longer available
+                    def run_with_fallback(prompt_text, images_list, primary_model):
+                        models_to_try = [primary_model] + ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.0-flash-lite", "gemini-3-flash-preview"]
+                        last_err = None
+                        for m_name in models_to_try:
+                            try:
+                                model_ai=genai.GenerativeModel(m_name)
+                                if images_list:
+                                    resp=model_ai.generate_content([prompt_text]+images_list)
+                                else:
+                                    resp=model_ai.generate_content(prompt_text)
+                                return resp, m_name
+                            except Exception as e:
+                                err_str = str(e)
+                                if "404" in err_str or "is no longer available" in err_str or "not found" in err_str.lower():
+                                    last_err = e
+                                    continue
+                                else:
+                                    raise e
+                        raise last_err if last_err else Exception("All models failed")
+                    resp, used_model = run_with_fallback(full_prompt, imgs, model_sel)
+                    if used_model != model_sel:
+                        st.warning(f"⚠️ {model_sel} ไม่พร้อมใช้งาน (404) - สลับไปใช้ {used_model} อัตโนมัติ")
+                        model_sel = used_model
+                    save_record({
+                        "Timestamp":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Model":brand_model,
+                        "Code":code_auto,
+                        "Cash":cash_price,
+                        "Net":net_price,
+                        "Down":down_payment,
+                        "Financing_auto":financing,
+                        "Flat_auto":flat_rate,
+                        "Term":term,
+                        "MonthlyRaw":monthly_raw,
+                        "RoundType":round_type,
+                        "MonthlyFinal":monthly,
+                        "TotalDrive":total_drive,
+                        "DSR":f"{dsr:.1f}%",
+                        "RuleScore":r_score,
+                        "RuleVerdict":r_verdict,
+                    })
+                    st.success(f"💾 บันทึกแล้ว - {brand_model} ราคาสด {cash_price:,.0f} ตามรุ่น + ค่างวด {monthly:,.0f}")
+                    st.markdown(resp.text)
+            except Exception as e:
+                st.error(f"Error: {e}")
+else:
+    st.info("อัปโหลดภาพเอกสารหรือถ่ายภาพก่อนรัน AI")
+st.markdown('</div>', unsafe_allow_html=True)
+# FIX: คำอธิบายส่วนท้ายนำออกได้ - ลบ st.caption ยาวออกแล้ว
